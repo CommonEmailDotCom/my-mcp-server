@@ -313,7 +313,7 @@ async function handleTool(name, args) {
       return (stdout + stderr).trim();
     }
     case "coolify_list_deployments": {
-      const data = await coolifyFetch(`/deploy?uuid=${args.app_uuid}&force=false`);
+      const data = await coolifyFetch(`/deployments/applications/${args.app_uuid}?take=10`);
       if (typeof data === "string") return data;
       return JSON.stringify(data, null, 2);
     }
@@ -326,19 +326,25 @@ async function handleTool(name, args) {
       const data = await coolifyFetch(`/deploy?uuid=${args.app_uuid}&force=false`);
       const result = typeof data === "string" ? data : JSON.stringify(data, null, 2);
 
-      // If deploying the MCP server itself, wait 60s then verify all tools are healthy
+      // If deploying the MCP server itself, poll healthz until all tools are up (max 5 min)
       if (args.app_uuid === "a1fr37jiwehxbfqp90k4cvsw") {
-        await new Promise(r => setTimeout(r, 60000));
-        try {
-          const healthRes = await fetch("https://mcp.joefuentes.me/healthz");
-          const health = await healthRes.json();
-          return result + "\n\n🔍 Post-deploy health check:\n" + JSON.stringify(health, null, 2) +
-            (health.status === "ok"
-              ? "\n\n✅ All " + health.tools_registered + " tools registered successfully."
-              : "\n\n⚠️ Degraded — missing tools: " + health.missing.join(", "));
-        } catch (err) {
-          return result + "\n\n⚠️ Health check failed: " + err.message;
+        const maxAttempts = 20;
+        for (let i = 0; i < maxAttempts; i++) {
+          await new Promise(r => setTimeout(r, 15000));
+          try {
+            const healthRes = await fetch("https://mcp.joefuentes.me/healthz");
+            if (healthRes.ok) {
+              const health = await healthRes.json();
+              if (health.status === "ok") {
+                // Save tokens so session survives next deploy
+                saveTokens(tokens);
+                return result + "\n\n🔍 Post-deploy health check (attempt " + (i+1) + "):\n" +
+                  "✅ All " + health.tools_registered + " tools registered successfully.";
+              }
+            }
+          } catch {}
         }
+        return result + "\n\n⚠️ Health check timed out after 5 minutes.";
       }
 
       return result;
@@ -569,9 +575,6 @@ const httpServer = createServer(async (req, res) => {
   // ── Coolify deployment badge ───────────────────────────────────────────────
   if (url.pathname === '/badge/coolify' && req.method === 'GET') {
     try {
-      const COOLIFY_API_TOKEN = process.env.COOLIFY_API_TOKEN;
-      const COOLIFY_URL = process.env.COOLIFY_URL || 'http://10.0.1.5:8080';
-
       // Get latest deployments for the SaaS app
       const depRes = await fetch(COOLIFY_URL + '/api/v1/deployments/applications/tuk1rcjj16vlk33jrbx3c9d3?take=1', {
         headers: { 'Authorization': 'Bearer ' + COOLIFY_API_TOKEN, 'Accept': 'application/json' }
