@@ -34,7 +34,7 @@ const execAsync = promisify(exec);
 // ── In-memory stores ──────────────────────────────────────────────────────────
 const authCodes = new Map();
 // Persist tokens to file so they survive restarts — no reconnect needed
-const TOKENS_FILE = '/tmp/mcp-tokens.json';
+const TOKENS_FILE = '/data/mcp-tokens.json';
 function loadTokens() {
   try {
     const data = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
