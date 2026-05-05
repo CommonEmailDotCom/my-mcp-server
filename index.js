@@ -13,16 +13,48 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const REPO_PATH = process.env.REPO_PATH || "/app";
+const REPO_PATH = process.env.REPO_PATH || "/repo";
 const BEARER_TOKEN = process.env.BEARER_TOKEN;
 const PORT = parseInt(process.env.PORT || "3100");
 const PG_CONNECTION_STRING = process.env.PG_CONNECTION_STRING;
+const GITHUB_REPO = process.env.GITHUB_REPO; // e.g. CommonEmailDotCom/SaaS-Boilerplate
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 if (!BEARER_TOKEN) {
   console.error("ERROR: BEARER_TOKEN env var is required");
   process.exit(1);
 }
 
+const execAsync = promisify(exec);
+
+// ── Clone repo on startup ────────────────────────────────────────────────────
+async function ensureRepo() {
+  if (!GITHUB_REPO || !GITHUB_TOKEN) {
+    console.log("ℹ️  No GITHUB_REPO/GITHUB_TOKEN set — skipping clone");
+    return;
+  }
+  try {
+    await fs.access(path.join(REPO_PATH, ".git"));
+    console.log("✅ Repo already cloned, pulling latest...");
+    await execAsync(`git -C ${REPO_PATH} pull`, {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+  } catch {
+    console.log("📦 Cloning repo...");
+    await fs.mkdir(REPO_PATH, { recursive: true });
+    const url = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
+    await execAsync(`git clone ${url} ${REPO_PATH}`, {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    // Store credentials for future pushes
+    await execAsync(
+      `git -C ${REPO_PATH} remote set-url origin https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`
+    );
+    console.log("✅ Repo cloned successfully");
+  }
+}
+
+// ── Postgres ─────────────────────────────────────────────────────────────────
 let pgClient = null;
 async function getDb() {
   if (!PG_CONNECTION_STRING) return null;
@@ -33,6 +65,7 @@ async function getDb() {
   return pgClient;
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function safePath(filePath) {
   const resolved = path.resolve(REPO_PATH, filePath.replace(/^\//, ""));
   if (!resolved.startsWith(path.resolve(REPO_PATH))) {
@@ -60,6 +93,7 @@ async function listDir(dirPath, depth = 0, maxDepth = 3) {
   return result;
 }
 
+// ── Tools ─────────────────────────────────────────────────────────────────────
 const TOOLS = [
   {
     name: "list_directory",
@@ -128,7 +162,7 @@ const TOOLS = [
   },
   {
     name: "git_commit_push",
-    description: "Stage all changes, commit, and push to remote.",
+    description: "Stage all changes, commit, and push to GitHub. Triggers Coolify redeploy.",
     inputSchema: {
       type: "object",
       properties: {
@@ -137,6 +171,11 @@ const TOOLS = [
       },
       required: ["message"],
     },
+  },
+  {
+    name: "git_pull",
+    description: "Pull latest changes from GitHub into the local clone.",
+    inputSchema: { type: "object", properties: {} },
   },
 ];
 
@@ -147,19 +186,19 @@ async function handleTool(name, args) {
       const entries = await listDir(base, 0, args.max_depth ?? 3);
       return entries.map((e) => `${e.type === "dir" ? "📁" : "📄"} ${e.path}`).join("\n");
     }
-    case "read_file": {
+    case "read_file":
       return await fs.readFile(safePath(args.path), "utf-8");
-    }
+
     case "write_file": {
       const full = safePath(args.path);
       await fs.mkdir(path.dirname(full), { recursive: true });
       await fs.writeFile(full, args.content, "utf-8");
       return `✅ Written: ${args.path}`;
     }
-    case "delete_file": {
+    case "delete_file":
       await fs.unlink(safePath(args.path));
       return `✅ Deleted: ${args.path}`;
-    }
+
     case "run_command": {
       const cwd = args.cwd ? safePath(args.cwd) : REPO_PATH;
       const { stdout, stderr } = await execAsync(args.command, {
@@ -191,11 +230,19 @@ async function handleTool(name, args) {
       }
       return results.join("\n");
     }
+    case "git_pull": {
+      const { stdout, stderr } = await execAsync(`git -C ${REPO_PATH} pull`, {
+        timeout: 30000,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      });
+      return (stdout + stderr).trim();
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
 }
 
+// ── MCP Server ────────────────────────────────────────────────────────────────
 const server = new Server(
   { name: "hetzner-dev-mcp", version: "1.0.0" },
   { capabilities: { tools: {} } }
@@ -215,6 +262,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// ── HTTP server ───────────────────────────────────────────────────────────────
 const httpServer = createServer(async (req, res) => {
   const auth = req.headers["authorization"] || "";
   if (auth !== `Bearer ${BEARER_TOKEN}`) {
@@ -225,7 +273,7 @@ const httpServer = createServer(async (req, res) => {
 
   if (req.url === "/health" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", repo: REPO_PATH }));
+    res.end(JSON.stringify({ status: "ok", repo: REPO_PATH, github: GITHUB_REPO || "not set" }));
     return;
   }
 
@@ -243,8 +291,11 @@ const httpServer = createServer(async (req, res) => {
   res.end("Not found");
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`✅ MCP server running on port ${PORT}`);
-  console.log(`   Repo path: ${REPO_PATH}`);
-  console.log(`   Postgres: ${PG_CONNECTION_STRING ? "connected" : "not configured"}`);
+// ── Start ─────────────────────────────────────────────────────────────────────
+ensureRepo().then(() => {
+  httpServer.listen(PORT, () => {
+    console.log(`✅ MCP server running on port ${PORT}`);
+    console.log(`   Repo: ${GITHUB_REPO || "not set"} → ${REPO_PATH}`);
+    console.log(`   Postgres: ${PG_CONNECTION_STRING ? "configured" : "not configured"}`);
+  });
 });
