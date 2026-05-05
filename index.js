@@ -542,20 +542,54 @@ const httpServer = createServer(async (req, res) => {
     try {
       const COOLIFY_API_TOKEN = process.env.COOLIFY_API_TOKEN;
       const COOLIFY_URL = process.env.COOLIFY_URL || 'http://10.0.1.5:8080';
-      const appRes = await fetch(COOLIFY_URL + '/api/v1/applications/tuk1rcjj16vlk33jrbx3c9d3', {
+
+      // Get latest deployments for the SaaS app
+      const depRes = await fetch(COOLIFY_URL + '/api/v1/deployments/applications/tuk1rcjj16vlk33jrbx3c9d3?take=1', {
         headers: { 'Authorization': 'Bearer ' + COOLIFY_API_TOKEN, 'Accept': 'application/json' }
       });
-      const app = await appRes.json();
-      const running = app.status && app.status.startsWith('running');
-      const message = running ? 'running' : (app.status || 'unknown');
-      const color = running ? '#2ea44f' : '#e53e3e';
+      const depData = await depRes.json();
+      const latest = depData.deployments?.[0];
+
+      let message, color;
+      if (!latest) {
+        message = 'unknown'; color = '#9f9f9f';
+      } else if (latest.status === 'in_progress' || latest.status === 'queued') {
+        message = 'deploying'; color = '#0075ca';
+      } else if (latest.status === 'finished') {
+        message = 'deployed · ' + (latest.commit?.slice(0,7) || ''); color = '#2ea44f';
+      } else if (latest.status === 'failed') {
+        message = 'failed · ' + (latest.commit?.slice(0,7) || ''); color = '#e53e3e';
+      } else if (latest.status === 'cancelled-by-user') {
+        message = 'cancelled'; color = '#9f9f9f';
+      } else {
+        message = latest.status; color = '#9f9f9f';
+      }
+
       const lw = 58; const mw = message.length * 7 + 14; const tw = lw + mw;
-      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + tw + '" height="20" role="img"><title>coolify: ' + message + '</title><linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient><clipPath id="r"><rect width="' + tw + '" height="20" rx="3" fill="#fff"/></clipPath><g clip-path="url(#r)"><rect width="' + lw + '" height="20" fill="#555"/><rect x="' + lw + '" width="' + mw + '" height="20" fill="' + color + '"/><rect width="' + tw + '" height="20" fill="url(#s)"/></g><g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11"><text x="' + Math.round(lw/2) + '" y="14">coolify</text><text x="' + Math.round(lw+mw/2) + '" y="14">' + message + '</text></g></svg>';
-      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0' });
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + tw + '" height="20" role="img">' +
+        '<title>coolify: ' + message + '</title>' +
+        '<linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>' +
+        '<clipPath id="r"><rect width="' + tw + '" height="20" rx="3" fill="#fff"/></clipPath>' +
+        '<g clip-path="url(#r)">' +
+        '<rect width="' + lw + '" height="20" fill="#555"/>' +
+        '<rect x="' + lw + '" width="' + mw + '" height="20" fill="' + color + '"/>' +
+        '<rect width="' + tw + '" height="20" fill="url(#s)"/>' +
+        '</g>' +
+        '<g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">' +
+        '<text x="' + Math.round(lw/2) + '" y="14">coolify</text>' +
+        '<text x="' + Math.round(lw + mw/2) + '" y="14">' + message + '</text>' +
+        '</g></svg>';
+
+      res.writeHead(200, {
+        'Content-Type': 'image/svg+xml',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+      });
       res.end(svg);
     } catch (err) {
       res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache' });
-      res.end('<svg xmlns="http://www.w3.org/2000/svg" width="104" height="20"><rect width="58" height="20" fill="#555" rx="3"/><rect x="58" width="46" height="20" fill="#9f9f9f" rx="3"/><g fill="#fff" font-family="Verdana,sans-serif" font-size="11" text-anchor="middle"><text x="29" y="14">coolify</text><text x="81" y="14">unknown</text></g></svg>');
+      res.end('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="20"><rect width="58" height="20" fill="#555" rx="3"/><rect x="58" width="62" height="20" fill="#9f9f9f" rx="3"/><g fill="#fff" font-family="Verdana,sans-serif" font-size="11" text-anchor="middle"><text x="29" y="14">coolify</text><text x="89" y="14">unknown</text></g></svg>');
     }
     return;
   }
