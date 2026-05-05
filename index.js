@@ -324,30 +324,7 @@ async function handleTool(name, args) {
     }
     case "coolify_trigger_deploy": {
       const data = await coolifyFetch(`/deploy?uuid=${args.app_uuid}&force=false`);
-      const result = typeof data === "string" ? data : JSON.stringify(data, null, 2);
-
-      // If deploying the MCP server itself, poll healthz until all tools are up (max 5 min)
-      if (args.app_uuid === "a1fr37jiwehxbfqp90k4cvsw") {
-        const maxAttempts = 20;
-        for (let i = 0; i < maxAttempts; i++) {
-          await new Promise(r => setTimeout(r, 15000));
-          try {
-            const healthRes = await fetch("https://mcp.joefuentes.me/healthz");
-            if (healthRes.ok) {
-              const health = await healthRes.json();
-              if (health.status === "ok") {
-                // Save tokens so session survives next deploy
-                saveTokens(tokens);
-                return result + "\n\n🔍 Post-deploy health check (attempt " + (i+1) + "):\n" +
-                  "✅ All " + health.tools_registered + " tools registered successfully.";
-              }
-            }
-          } catch {}
-        }
-        return result + "\n\n⚠️ Health check timed out after 5 minutes.";
-      }
-
-      return result;
+      return typeof data === "string" ? data : JSON.stringify(data, null, 2);
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
