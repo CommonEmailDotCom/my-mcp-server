@@ -17,7 +17,7 @@ const REPO_PATH = process.env.REPO_PATH || "/repo";
 const BEARER_TOKEN = process.env.BEARER_TOKEN;
 const PORT = parseInt(process.env.PORT || "3100");
 const PG_CONNECTION_STRING = process.env.PG_CONNECTION_STRING;
-const GITHUB_REPO = process.env.GITHUB_REPO; // e.g. CommonEmailDotCom/SaaS-Boilerplate
+const GITHUB_REPO = process.env.GITHUB_REPO;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 if (!BEARER_TOKEN) {
@@ -27,7 +27,7 @@ if (!BEARER_TOKEN) {
 
 const execAsync = promisify(exec);
 
-// ── Clone repo on startup ────────────────────────────────────────────────────
+// ── Clone repo on startup ─────────────────────────────────────────────────────
 async function ensureRepo() {
   if (!GITHUB_REPO || !GITHUB_TOKEN) {
     console.log("ℹ️  No GITHUB_REPO/GITHUB_TOKEN set — skipping clone");
@@ -46,7 +46,6 @@ async function ensureRepo() {
     await execAsync(`git clone ${url} ${REPO_PATH}`, {
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     });
-    // Store credentials for future pushes
     await execAsync(
       `git -C ${REPO_PATH} remote set-url origin https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`
     );
@@ -54,7 +53,7 @@ async function ensureRepo() {
   }
 }
 
-// ── Postgres ─────────────────────────────────────────────────────────────────
+// ── Postgres ──────────────────────────────────────────────────────────────────
 let pgClient = null;
 async function getDb() {
   if (!PG_CONNECTION_STRING) return null;
@@ -91,6 +90,15 @@ async function listDir(dirPath, depth = 0, maxDepth = 3) {
     }
   }
   return result;
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk) => (data += chunk));
+    req.on("end", () => resolve(data));
+    req.on("error", reject);
+  });
 }
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
@@ -162,7 +170,7 @@ const TOOLS = [
   },
   {
     name: "git_commit_push",
-    description: "Stage all changes, commit, and push to GitHub. Triggers Coolify redeploy.",
+    description: "Stage all changes, commit, and push to GitHub.",
     inputSchema: {
       type: "object",
       properties: {
@@ -174,7 +182,7 @@ const TOOLS = [
   },
   {
     name: "git_pull",
-    description: "Pull latest changes from GitHub into the local clone.",
+    description: "Pull latest changes from GitHub.",
     inputSchema: { type: "object", properties: {} },
   },
 ];
@@ -188,7 +196,6 @@ async function handleTool(name, args) {
     }
     case "read_file":
       return await fs.readFile(safePath(args.path), "utf-8");
-
     case "write_file": {
       const full = safePath(args.path);
       await fs.mkdir(path.dirname(full), { recursive: true });
@@ -198,7 +205,6 @@ async function handleTool(name, args) {
     case "delete_file":
       await fs.unlink(safePath(args.path));
       return `✅ Deleted: ${args.path}`;
-
     case "run_command": {
       const cwd = args.cwd ? safePath(args.cwd) : REPO_PATH;
       const { stdout, stderr } = await execAsync(args.command, {
@@ -249,7 +255,6 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     const result = await handleTool(request.params.name, request.params.arguments || {});
@@ -263,7 +268,43 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
+const BASE_URL = process.env.BASE_URL || `https://mcp.joefuentes.me`;
+
 const httpServer = createServer(async (req, res) => {
+  const url = new URL(req.url, BASE_URL);
+
+  // ── OAuth metadata (no auth required) ──
+  if (url.pathname === "/.well-known/oauth-authorization-server" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      issuer: BASE_URL,
+      token_endpoint: `${BASE_URL}/token`,
+      grant_types_supported: ["client_credentials"],
+      token_endpoint_auth_methods_supported: ["client_secret_post"],
+    }));
+    return;
+  }
+
+  // ── Token endpoint — exchange client_secret for access token ──
+  if (url.pathname === "/token" && req.method === "POST") {
+    const body = await readBody(req);
+    const params = new URLSearchParams(body);
+    const secret = params.get("client_secret");
+    if (secret !== BEARER_TOKEN) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid_client" }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      access_token: BEARER_TOKEN,
+      token_type: "Bearer",
+      expires_in: 86400,
+    }));
+    return;
+  }
+
+  // ── All other routes require Bearer token ──
   const auth = req.headers["authorization"] || "";
   if (auth !== `Bearer ${BEARER_TOKEN}`) {
     res.writeHead(401, { "Content-Type": "application/json" });
@@ -271,13 +312,13 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  if (req.url === "/health" && req.method === "GET") {
+  if (url.pathname === "/health" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok", repo: REPO_PATH, github: GITHUB_REPO || "not set" }));
     return;
   }
 
-  if (req.url === "/mcp") {
+  if (url.pathname === "/mcp") {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });
