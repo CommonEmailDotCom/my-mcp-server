@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createServer } from "http";
 import fs from "fs/promises";
+import { readFileSync, writeFileSync } from "fs";
 import path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
@@ -37,12 +38,12 @@ const authCodes = new Map();
 const TOKENS_FILE = '/data/mcp-tokens.json';
 function loadTokens() {
   try {
-    const data = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
+    const data = JSON.parse(readFileSync(TOKENS_FILE, 'utf8'));
     return new Set(data);
   } catch { return new Set(); }
 }
 function saveTokens(set) {
-  try { fs.writeFileSync(TOKENS_FILE, JSON.stringify([...set])); } catch {}
+  try { writeFileSync(TOKENS_FILE, JSON.stringify([...set])); } catch(e) { console.error("saveTokens failed:", e.message); }
 }
 const tokens = loadTokens();
 
