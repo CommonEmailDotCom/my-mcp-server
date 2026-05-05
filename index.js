@@ -21,6 +21,8 @@ const PG_CONNECTION_STRING = process.env.PG_CONNECTION_STRING;
 const GITHUB_REPO = process.env.GITHUB_REPO;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const BASE_URL = process.env.BASE_URL || "https://mcp.joefuentes.me";
+const COOLIFY_URL = process.env.COOLIFY_URL || "http://coolify:8000";
+const COOLIFY_API_TOKEN = process.env.COOLIFY_API_TOKEN;
 
 if (!BEARER_TOKEN) {
   console.error("ERROR: BEARER_TOKEN env var is required");
@@ -30,8 +32,28 @@ if (!BEARER_TOKEN) {
 const execAsync = promisify(exec);
 
 // ── In-memory stores ──────────────────────────────────────────────────────────
-const authCodes = new Map();   // code → { codeChallenge, redirectUri, clientId }
-const tokens = new Set();      // valid access tokens
+const authCodes = new Map();
+const tokens = new Set();
+
+// ── Coolify API helper ────────────────────────────────────────────────────────
+async function coolifyFetch(endpoint, options = {}) {
+  if (!COOLIFY_API_TOKEN) throw new Error("COOLIFY_API_TOKEN not set");
+  const url = `${COOLIFY_URL}/api/v1${endpoint}`;
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      "Authorization": `Bearer ${COOLIFY_API_TOKEN}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
 
 // ── Clone repo on startup ─────────────────────────────────────────────────────
 async function ensureRepo() {
@@ -108,10 +130,7 @@ function readBody(req) {
 }
 
 function verifyPKCE(codeVerifier, codeChallenge) {
-  const hash = crypto
-    .createHash("sha256")
-    .update(codeVerifier)
-    .digest("base64url");
+  const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64url");
   return hash === codeChallenge;
 }
 
@@ -142,10 +161,7 @@ const TOOLS = [
     description: "Write or overwrite a file in the repo.",
     inputSchema: {
       type: "object",
-      properties: {
-        path: { type: "string" },
-        content: { type: "string" },
-      },
+      properties: { path: { type: "string" }, content: { type: "string" } },
       required: ["path", "content"],
     },
   },
@@ -163,10 +179,7 @@ const TOOLS = [
     description: "Run a shell command in the repo directory.",
     inputSchema: {
       type: "object",
-      properties: {
-        command: { type: "string" },
-        cwd: { type: "string" },
-      },
+      properties: { command: { type: "string" }, cwd: { type: "string" } },
       required: ["command"],
     },
   },
@@ -187,10 +200,7 @@ const TOOLS = [
     description: "Stage all changes, commit, and push to GitHub.",
     inputSchema: {
       type: "object",
-      properties: {
-        message: { type: "string" },
-        branch: { type: "string" },
-      },
+      properties: { message: { type: "string" }, branch: { type: "string" } },
       required: ["message"],
     },
   },
@@ -198,6 +208,39 @@ const TOOLS = [
     name: "git_pull",
     description: "Pull latest changes from GitHub.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "coolify_list_deployments",
+    description: "List recent deployments for an application in Coolify.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        app_uuid: { type: "string", description: "Coolify application UUID (e.g. tuk1rcjj16vlk33jrbx3c9d3)" },
+      },
+      required: ["app_uuid"],
+    },
+  },
+  {
+    name: "coolify_deployment_logs",
+    description: "Get the logs for a specific Coolify deployment.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        deployment_uuid: { type: "string", description: "Coolify deployment UUID" },
+      },
+      required: ["deployment_uuid"],
+    },
+  },
+  {
+    name: "coolify_trigger_deploy",
+    description: "Trigger a new deployment for a Coolify application.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        app_uuid: { type: "string", description: "Coolify application UUID" },
+      },
+      required: ["app_uuid"],
+    },
   },
 ];
 
@@ -257,6 +300,21 @@ async function handleTool(name, args) {
       });
       return (stdout + stderr).trim();
     }
+    case "coolify_list_deployments": {
+      const data = await coolifyFetch(`/applications/${args.app_uuid}/deployments`);
+      if (typeof data === "string") return data;
+      return JSON.stringify(data, null, 2);
+    }
+    case "coolify_deployment_logs": {
+      const data = await coolifyFetch(`/deployments/${args.deployment_uuid}`);
+      if (typeof data === "string") return data;
+      return JSON.stringify(data, null, 2);
+    }
+    case "coolify_trigger_deploy": {
+      const data = await coolifyFetch(`/applications/${args.app_uuid}/deploy`, { method: "POST" });
+      if (typeof data === "string") return data;
+      return JSON.stringify(data, null, 2);
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -285,7 +343,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 const httpServer = createServer(async (req, res) => {
   const url = new URL(req.url, BASE_URL);
 
-  // ── OAuth metadata ──
   if (url.pathname === "/.well-known/oauth-authorization-server" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
@@ -299,7 +356,6 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // ── Authorization endpoint — show login form ──
   if (url.pathname === "/authorize" && req.method === "GET") {
     const clientId = url.searchParams.get("client_id");
     const redirectUri = url.searchParams.get("redirect_uri");
@@ -319,7 +375,6 @@ const httpServer = createServer(async (req, res) => {
     input { width: 100%; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; margin-bottom: 12px; }
     button { width: 100%; padding: 12px; background: #6c47ff; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
     button:hover { background: #5a3de0; }
-    .error { color: red; margin-top: 12px; }
   </style>
 </head>
 <body>
@@ -338,7 +393,6 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // ── Authorization POST — validate token, issue code ──
   if (url.pathname === "/authorize" && req.method === "POST") {
     const body = await readBody(req);
     const params = new URLSearchParams(body);
@@ -357,10 +411,9 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
-    // Issue auth code
     const code = crypto.randomBytes(32).toString("hex");
     authCodes.set(code, { codeChallenge, redirectUri, clientId });
-    setTimeout(() => authCodes.delete(code), 5 * 60 * 1000); // expire in 5 min
+    setTimeout(() => authCodes.delete(code), 5 * 60 * 1000);
 
     const redirect = new URL(redirectUri);
     redirect.searchParams.set("code", code);
@@ -371,7 +424,6 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // ── Token endpoint — exchange code for access token ──
   if (url.pathname === "/token" && req.method === "POST") {
     const body = await readBody(req);
     const params = new URLSearchParams(body);
@@ -396,15 +448,10 @@ const httpServer = createServer(async (req, res) => {
     tokens.add(accessToken);
 
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
-      access_token: accessToken,
-      token_type: "Bearer",
-      expires_in: 86400,
-    }));
+    res.end(JSON.stringify({ access_token: accessToken, token_type: "Bearer", expires_in: 86400 }));
     return;
   }
 
-  // ── All other routes require Bearer token ──
   const auth = req.headers["authorization"] || "";
   const token = auth.replace("Bearer ", "");
   if (token !== BEARER_TOKEN && !tokens.has(token)) {
@@ -415,14 +462,17 @@ const httpServer = createServer(async (req, res) => {
 
   if (url.pathname === "/health" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", repo: REPO_PATH, github: GITHUB_REPO || "not set" }));
+    res.end(JSON.stringify({
+      status: "ok",
+      repo: REPO_PATH,
+      github: GITHUB_REPO || "not set",
+      coolify: COOLIFY_API_TOKEN ? "configured" : "not configured",
+    }));
     return;
   }
 
   if (url.pathname === "/mcp") {
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-    });
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => transport.close());
     await server.connect(transport);
     await transport.handleRequest(req, res);
@@ -439,5 +489,6 @@ ensureRepo().then(() => {
     console.log(`✅ MCP server running on port ${PORT}`);
     console.log(`   Repo: ${GITHUB_REPO || "not set"} → ${REPO_PATH}`);
     console.log(`   Postgres: ${PG_CONNECTION_STRING ? "configured" : "not configured"}`);
+    console.log(`   Coolify: ${COOLIFY_API_TOKEN ? "configured" : "not configured"}`);
   });
 });
