@@ -460,6 +460,20 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // Trigger Coolify deploy (called by GitHub Actions)
+  if (url.pathname === "/trigger-deploy" && req.method === "POST") {
+    try {
+      const appUuid = url.searchParams.get("uuid") || "tuk1rcjj16vlk33jrbx3c9d3";
+      const data = await coolifyFetch("/deploy?uuid=" + appUuid + "&force=false");
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(data));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
   if (url.pathname === "/health" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
