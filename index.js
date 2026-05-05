@@ -481,7 +481,7 @@ const httpServer = createServer(async (req, res) => {
   }
 
   // Public endpoints — skip auth
-  if (url.pathname === '/badge/smoke' || url.pathname === '/smoke-status' || url.pathname === '/smoke-latest' || url.pathname === '/badge/coolify' || url.pathname === '/health' || url.pathname === '/healthz') {
+  if (url.pathname === '/badge/smoke' || url.pathname === '/smoke-status' || url.pathname === '/smoke-latest' || url.pathname === '/badge/coolify' || url.pathname === '/health' || url.pathname === '/healthz' || url.pathname === '/save-tokens') {
     // fall through to handlers below
   } else {
       const auth = req.headers["authorization"] || "";
@@ -619,6 +619,14 @@ const httpServer = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache' });
       res.end('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="20"><rect width="58" height="20" fill="#555" rx="3"/><rect x="58" width="62" height="20" fill="#9f9f9f" rx="3"/><g fill="#fff" font-family="Verdana,sans-serif" font-size="11" text-anchor="middle"><text x="29" y="14">coolify</text><text x="89" y="14">unknown</text></g></svg>');
     }
+    return;
+  }
+
+  // ── Save current in-memory tokens to disk (call after reconnect) ──────────
+  if (url.pathname === '/save-tokens' && req.method === 'GET') {
+    saveTokens(tokens);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ saved: tokens.size, file: TOKENS_FILE }));
     return;
   }
 
