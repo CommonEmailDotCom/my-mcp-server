@@ -313,9 +313,15 @@ async function handleTool(name, args) {
       await fs.writeFile(full, args.content, "utf-8");
       return `✅ Written: ${args.path}`;
     }
-    case "delete_file":
-      await fs.unlink(safePath(args.path));
+    case "delete_file": {
+      const delPath = safePath(args.path);
+      try {
+        await fs.unlink(delPath);
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+      }
       return `✅ Deleted: ${args.path}`;
+    }
     case "run_command": {
       const cwd = args.cwd ? safePath(args.cwd) : REPO_PATH;
       const { stdout, stderr } = await execAsync(args.command, {
