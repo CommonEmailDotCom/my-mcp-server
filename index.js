@@ -8,6 +8,7 @@ import fs from "fs/promises";
 import path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
+import crypto from "crypto";
 import pg from "pg";
 import dotenv from "dotenv";
 
@@ -19,6 +20,7 @@ const PORT = parseInt(process.env.PORT || "3100");
 const PG_CONNECTION_STRING = process.env.PG_CONNECTION_STRING;
 const GITHUB_REPO = process.env.GITHUB_REPO;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const BASE_URL = process.env.BASE_URL || "https://mcp.joefuentes.me";
 
 if (!BEARER_TOKEN) {
   console.error("ERROR: BEARER_TOKEN env var is required");
@@ -26,6 +28,10 @@ if (!BEARER_TOKEN) {
 }
 
 const execAsync = promisify(exec);
+
+// ── In-memory stores ──────────────────────────────────────────────────────────
+const authCodes = new Map();   // code → { codeChallenge, redirectUri, clientId }
+const tokens = new Set();      // valid access tokens
 
 // ── Clone repo on startup ─────────────────────────────────────────────────────
 async function ensureRepo() {
@@ -99,6 +105,14 @@ function readBody(req) {
     req.on("end", () => resolve(data));
     req.on("error", reject);
   });
+}
+
+function verifyPKCE(codeVerifier, codeChallenge) {
+  const hash = crypto
+    .createHash("sha256")
+    .update(codeVerifier)
+    .digest("base64url");
+  return hash === codeChallenge;
 }
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
@@ -268,36 +282,122 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
-const BASE_URL = process.env.BASE_URL || `https://mcp.joefuentes.me`;
-
 const httpServer = createServer(async (req, res) => {
   const url = new URL(req.url, BASE_URL);
 
-  // ── OAuth metadata (no auth required) ──
+  // ── OAuth metadata ──
   if (url.pathname === "/.well-known/oauth-authorization-server" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       issuer: BASE_URL,
+      authorization_endpoint: `${BASE_URL}/authorize`,
       token_endpoint: `${BASE_URL}/token`,
-      grant_types_supported: ["client_credentials"],
-      token_endpoint_auth_methods_supported: ["client_secret_post"],
+      grant_types_supported: ["authorization_code"],
+      code_challenge_methods_supported: ["S256"],
+      response_types_supported: ["code"],
     }));
     return;
   }
 
-  // ── Token endpoint — exchange client_secret for access token ──
+  // ── Authorization endpoint — show login form ──
+  if (url.pathname === "/authorize" && req.method === "GET") {
+    const clientId = url.searchParams.get("client_id");
+    const redirectUri = url.searchParams.get("redirect_uri");
+    const codeChallenge = url.searchParams.get("code_challenge");
+    const state = url.searchParams.get("state");
+
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Authorize Claude</title>
+  <style>
+    body { font-family: sans-serif; max-width: 400px; margin: 80px auto; padding: 20px; }
+    h2 { margin-bottom: 8px; }
+    p { color: #555; margin-bottom: 24px; }
+    input { width: 100%; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; margin-bottom: 12px; }
+    button { width: 100%; padding: 12px; background: #6c47ff; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
+    button:hover { background: #5a3de0; }
+    .error { color: red; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h2>🔌 Authorize Claude</h2>
+  <p>Enter your Bearer token to give Claude access to your server.</p>
+  <form method="POST" action="/authorize">
+    <input type="hidden" name="client_id" value="${clientId}" />
+    <input type="hidden" name="redirect_uri" value="${redirectUri}" />
+    <input type="hidden" name="code_challenge" value="${codeChallenge}" />
+    <input type="hidden" name="state" value="${state}" />
+    <input type="password" name="token" placeholder="Bearer token" autofocus />
+    <button type="submit">Authorize</button>
+  </form>
+</body>
+</html>`);
+    return;
+  }
+
+  // ── Authorization POST — validate token, issue code ──
+  if (url.pathname === "/authorize" && req.method === "POST") {
+    const body = await readBody(req);
+    const params = new URLSearchParams(body);
+    const token = params.get("token");
+    const redirectUri = params.get("redirect_uri");
+    const codeChallenge = params.get("code_challenge");
+    const state = params.get("state");
+    const clientId = params.get("client_id");
+
+    if (token !== BEARER_TOKEN) {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<!DOCTYPE html><html><body style="font-family:sans-serif;max-width:400px;margin:80px auto;padding:20px">
+        <h2>❌ Invalid token</h2><p>The token you entered is incorrect.</p>
+        <a href="/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${codeChallenge}&state=${state}&code_challenge_method=S256">Try again</a>
+      </body></html>`);
+      return;
+    }
+
+    // Issue auth code
+    const code = crypto.randomBytes(32).toString("hex");
+    authCodes.set(code, { codeChallenge, redirectUri, clientId });
+    setTimeout(() => authCodes.delete(code), 5 * 60 * 1000); // expire in 5 min
+
+    const redirect = new URL(redirectUri);
+    redirect.searchParams.set("code", code);
+    redirect.searchParams.set("state", state);
+
+    res.writeHead(302, { Location: redirect.toString() });
+    res.end();
+    return;
+  }
+
+  // ── Token endpoint — exchange code for access token ──
   if (url.pathname === "/token" && req.method === "POST") {
     const body = await readBody(req);
     const params = new URLSearchParams(body);
-    const secret = params.get("client_secret");
-    if (secret !== BEARER_TOKEN) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "invalid_client" }));
+    const code = params.get("code");
+    const codeVerifier = params.get("code_verifier");
+
+    const stored = authCodes.get(code);
+    if (!stored) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid_grant" }));
       return;
     }
+
+    if (!verifyPKCE(codeVerifier, stored.codeChallenge)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid_grant", error_description: "PKCE verification failed" }));
+      return;
+    }
+
+    authCodes.delete(code);
+    const accessToken = crypto.randomBytes(32).toString("hex");
+    tokens.add(accessToken);
+
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
-      access_token: BEARER_TOKEN,
+      access_token: accessToken,
       token_type: "Bearer",
       expires_in: 86400,
     }));
@@ -306,7 +406,8 @@ const httpServer = createServer(async (req, res) => {
 
   // ── All other routes require Bearer token ──
   const auth = req.headers["authorization"] || "";
-  if (auth !== `Bearer ${BEARER_TOKEN}`) {
+  const token = auth.replace("Bearer ", "");
+  if (token !== BEARER_TOKEN && !tokens.has(token)) {
     res.writeHead(401, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unauthorized" }));
     return;
