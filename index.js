@@ -33,7 +33,18 @@ const execAsync = promisify(exec);
 
 // ── In-memory stores ──────────────────────────────────────────────────────────
 const authCodes = new Map();
-const tokens = new Set();
+// Persist tokens to file so they survive restarts — no reconnect needed
+const TOKENS_FILE = '/tmp/mcp-tokens.json';
+function loadTokens() {
+  try {
+    const data = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
+    return new Set(data);
+  } catch { return new Set(); }
+}
+function saveTokens(set) {
+  try { fs.writeFileSync(TOKENS_FILE, JSON.stringify([...set])); } catch {}
+}
+const tokens = loadTokens();
 
 // ── Coolify API helper ────────────────────────────────────────────────────────
 async function coolifyFetch(endpoint, options = {}) {
@@ -462,6 +473,7 @@ const httpServer = createServer(async (req, res) => {
     authCodes.delete(code);
     const accessToken = crypto.randomBytes(32).toString("hex");
     tokens.add(accessToken);
+    saveTokens(tokens);
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ access_token: accessToken, token_type: "Bearer", expires_in: 86400 }));
