@@ -460,6 +460,55 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+
+  // ── Smoke test badge endpoint ─────────────────────────────────────────────
+  if (url.pathname === '/badge/smoke' && req.method === 'GET') {
+    try {
+      const statusRes = await fetch('https://raw.githubusercontent.com/CommonEmailDotCom/SaaS-Boilerplate/main/smoke-status.json');
+      const status = await statusRes.json();
+
+      const passing = status.status === 'passing';
+      const label = 'smoke test';
+      const message = passing ? 'passing ✓' : 'failing ✗';
+      const color = passing ? '2ea44f' : 'e53e3e';
+      const runUrl = status.runUrl || 'https://github.com/CommonEmailDotCom/SaaS-Boilerplate/actions/workflows/smoke-test.yml';
+
+      // Redirect to shields.io with dynamic params so it renders a proper badge
+      const shieldsUrl = 'https://img.shields.io/badge/' +
+        encodeURIComponent(label) + '-' +
+        encodeURIComponent(message) + '-' +
+        color + '?style=flat-square';
+
+      res.writeHead(302, {
+        'Location': shieldsUrl,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      });
+      res.end();
+    } catch (err) {
+      // Fallback badge if status file not found yet
+      res.writeHead(302, {
+        'Location': 'https://img.shields.io/badge/smoke%20test-unknown-lightgrey?style=flat-square',
+        'Cache-Control': 'no-cache',
+      });
+      res.end();
+    }
+    return;
+  }
+
+  // ── Smoke test status JSON endpoint ──────────────────────────────────────
+  if (url.pathname === '/smoke-status' && req.method === 'GET') {
+    try {
+      const statusRes = await fetch('https://raw.githubusercontent.com/CommonEmailDotCom/SaaS-Boilerplate/main/smoke-status.json');
+      const status = await statusRes.json();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+      res.end(JSON.stringify(status));
+    } catch (err) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Status not found' }));
+    }
+    return;
+  }
+
   // Trigger Coolify deploy (called by GitHub Actions)
   if (url.pathname === "/trigger-deploy" && req.method === "POST") {
     try {
