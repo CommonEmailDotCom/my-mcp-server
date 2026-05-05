@@ -91,6 +91,13 @@ async function ensureRepo() {
     );
     console.log("✅ Repo cloned successfully");
   }
+  // Set git identity
+  const gitName = process.env.GIT_AUTHOR_NAME || "CommonEmailDotCom";
+  const gitEmail = process.env.GIT_AUTHOR_EMAIL || "github@commonemail.com";
+  try {
+    await execAsync(`git -C ${REPO_PATH} config user.name "${gitName}"`);
+    await execAsync(`git -C ${REPO_PATH} config user.email "${gitEmail}"`);
+  } catch {}
 }
 
 // ── Postgres ──────────────────────────────────────────────────────────────────
@@ -244,6 +251,41 @@ const TOOLS = [
     },
   },
   {
+    name: "coolify_list_envs",
+    description: "List environment variables for a Coolify application.",
+    inputSchema: {
+      type: "object",
+      properties: { app_uuid: { type: "string" } },
+      required: ["app_uuid"],
+    },
+  },
+  {
+    name: "coolify_create_env",
+    description: "Create an environment variable for a Coolify application.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        app_uuid: { type: "string" },
+        key: { type: "string" },
+        value: { type: "string" },
+      },
+      required: ["app_uuid", "key", "value"],
+    },
+  },
+  {
+    name: "coolify_update_env",
+    description: "Update an environment variable for a Coolify application.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        app_uuid: { type: "string" },
+        key: { type: "string" },
+        value: { type: "string" },
+      },
+      required: ["app_uuid", "key", "value"],
+    },
+  },
+  {
     name: "coolify_trigger_deploy",
     description: "Trigger a new deployment for a Coolify application.",
     inputSchema: {
@@ -319,6 +361,31 @@ async function handleTool(name, args) {
     }
     case "coolify_deployment_logs": {
       const data = await coolifyFetch(`/deployments/${args.deployment_uuid}`);
+      if (typeof data === "string") return data;
+      return JSON.stringify(data, null, 2);
+    }
+    case "coolify_list_envs": {
+      const data = await coolifyFetch(`/applications/${args.app_uuid}/envs`);
+      if (typeof data === "string") return data;
+      return JSON.stringify(data, null, 2);
+    }
+    case "coolify_create_env": {
+      const data = await coolifyFetch(`/applications/${args.app_uuid}/envs`, {
+        method: "POST",
+        body: JSON.stringify({ key: args.key, value: args.value }),
+      });
+      if (typeof data === "string") return data;
+      return JSON.stringify(data, null, 2);
+    }
+    case "coolify_update_env": {
+      // Get existing envs to find the uuid
+      const envs = await coolifyFetch(`/applications/${args.app_uuid}/envs`);
+      const env = Array.isArray(envs) ? envs.find(e => e.key === args.key) : null;
+      if (!env) return `❌ Env var '${args.key}' not found`;
+      const data = await coolifyFetch(`/applications/${args.app_uuid}/envs`, {
+        method: "PATCH",
+        body: JSON.stringify({ key: args.key, value: args.value, uuid: env.uuid }),
+      });
       if (typeof data === "string") return data;
       return JSON.stringify(data, null, 2);
     }
@@ -640,7 +707,7 @@ const httpServer = createServer(async (req, res) => {
 
   if (url.pathname === "/healthz" && req.method === "GET") {
     const allTools = TOOLS.map(t => t.name);
-    const expected = ["list_directory","read_file","write_file","delete_file","run_command","query_postgres","git_commit_push","git_pull","coolify_list_deployments","coolify_deployment_logs","coolify_trigger_deploy"];
+    const expected = ["list_directory","read_file","write_file","delete_file","run_command","query_postgres","git_commit_push","git_pull","coolify_list_deployments","coolify_deployment_logs","coolify_trigger_deploy","coolify_list_envs","coolify_create_env","coolify_update_env"];
     const missing = expected.filter(n => !allTools.includes(n));
     const ok = missing.length === 0;
     res.writeHead(ok ? 200 : 503, { "Content-Type": "application/json" });
