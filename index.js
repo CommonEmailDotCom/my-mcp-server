@@ -338,7 +338,7 @@ async function handleTool(name, args) {
 
 // ── MCP Server ────────────────────────────────────────────────────────────────
 const server = new Server(
-  { name: "hetzner-dev-mcp", version: "1.0.0" },
+  { name: "hetzner-dev-mcp", version: "1.0.1" },
   { capabilities: { tools: {} } }
 );
 
