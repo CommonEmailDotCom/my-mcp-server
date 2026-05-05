@@ -453,7 +453,7 @@ const httpServer = createServer(async (req, res) => {
   }
 
   // Public endpoints — skip auth
-  if (url.pathname === '/badge/smoke' || url.pathname === '/smoke-status' || url.pathname === '/smoke-latest' || url.pathname === '/badge/coolify') {
+  if (url.pathname === '/badge/smoke' || url.pathname === '/smoke-status' || url.pathname === '/smoke-latest' || url.pathname === '/badge/coolify' || url.pathname === '/health' || url.pathname === '/healthz') {
     // fall through to handlers below
   } else {
       const auth = req.headers["authorization"] || "";
