@@ -615,6 +615,23 @@ const httpServer = createServer(async (req, res) => {
       repo: REPO_PATH,
       github: GITHUB_REPO || "not set",
       coolify: COOLIFY_API_TOKEN ? "configured" : "not configured",
+      tools: TOOLS.length,
+      tool_names: TOOLS.map(t => t.name),
+    }));
+    return;
+  }
+
+  if (url.pathname === "/healthz" && req.method === "GET") {
+    const allTools = TOOLS.map(t => t.name);
+    const expected = ["list_directory","read_file","write_file","delete_file","run_command","query_postgres","git_commit_push","git_pull","coolify_list_deployments","coolify_deployment_logs","coolify_trigger_deploy"];
+    const missing = expected.filter(n => !allTools.includes(n));
+    const ok = missing.length === 0;
+    res.writeHead(ok ? 200 : 503, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      status: ok ? "ok" : "degraded",
+      tools_registered: TOOLS.length,
+      tools_expected: expected.length,
+      missing,
     }));
     return;
   }
