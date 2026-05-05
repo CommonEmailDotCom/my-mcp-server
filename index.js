@@ -301,7 +301,7 @@ async function handleTool(name, args) {
       return (stdout + stderr).trim();
     }
     case "coolify_list_deployments": {
-      const data = await coolifyFetch(`/applications/${args.app_uuid}/deployments`);
+      const data = await coolifyFetch(`/deploy?uuid=${args.app_uuid}&force=false`);
       if (typeof data === "string") return data;
       return JSON.stringify(data, null, 2);
     }
@@ -311,7 +311,7 @@ async function handleTool(name, args) {
       return JSON.stringify(data, null, 2);
     }
     case "coolify_trigger_deploy": {
-      const data = await coolifyFetch(`/applications/${args.app_uuid}/deploy`, { method: "POST" });
+      const data = await coolifyFetch(`/deploy?uuid=${args.app_uuid}&force=false`);
       if (typeof data === "string") return data;
       return JSON.stringify(data, null, 2);
     }
