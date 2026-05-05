@@ -466,36 +466,44 @@ const httpServer = createServer(async (req, res) => {
   }
 
 
-  // ── Smoke test badge endpoint ─────────────────────────────────────────────
+  // ── Smoke test badge endpoint (serves SVG directly to avoid caching) ───────
   if (url.pathname === '/badge/smoke' && req.method === 'GET') {
     try {
-      const statusRes = await fetch('https://raw.githubusercontent.com/CommonEmailDotCom/SaaS-Boilerplate/main/smoke-status.json');
+      const statusRes = await fetch('https://raw.githubusercontent.com/CommonEmailDotCom/SaaS-Boilerplate/main/smoke-status.json?t=' + Date.now());
       const status = await statusRes.json();
-
       const passing = status.status === 'passing';
       const label = 'smoke test';
-      const message = passing ? 'passing ✓' : 'failing ✗';
-      const color = passing ? '2ea44f' : 'e53e3e';
-      const runUrl = status.runUrl || 'https://github.com/CommonEmailDotCom/SaaS-Boilerplate/actions/workflows/smoke-test.yml';
-
-      // Redirect to shields.io with dynamic params so it renders a proper badge
-      const shieldsUrl = 'https://img.shields.io/badge/' +
-        encodeURIComponent(label) + '-' +
-        encodeURIComponent(message) + '-' +
-        color + '?style=flat-square';
-
-      res.writeHead(302, {
-        'Location': shieldsUrl,
+      const message = passing ? 'passing' : 'failing';
+      const color = passing ? '#2ea44f' : '#e53e3e';
+      const svg = [
+        '<svg xmlns="http://www.w3.org/2000/svg" width="156" height="20" role="img">',
+        '<title>' + label + ': ' + message + '</title>',
+        '<linearGradient id="s" x2="0" y2="100%">',
+        '<stop offset="0" stop-color="#bbb" stop-opacity=".1"/>',
+        '<stop offset="1" stop-opacity=".1"/>',
+        '</linearGradient>',
+        '<clipPath id="r"><rect width="156" height="20" rx="3" fill="#fff"/></clipPath>',
+        '<g clip-path="url(#r)">',
+        '<rect width="82" height="20" fill="#555"/>',
+        '<rect x="82" width="74" height="20" fill="' + color + '"/>',
+        '<rect width="156" height="20" fill="url(#s)"/>',
+        '</g>',
+        '<g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">',
+        '<text x="41" y="14">' + label + '</text>',
+        '<text x="119" y="14">' + message + '</text>',
+        '</g>',
+        '</svg>'
+      ].join('');
+      res.writeHead(200, {
+        'Content-Type': 'image/svg+xml',
         'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
       });
-      res.end();
+      res.end(svg);
     } catch (err) {
-      // Fallback badge if status file not found yet
-      res.writeHead(302, {
-        'Location': 'https://img.shields.io/badge/smoke%20test-unknown-lightgrey?style=flat-square',
-        'Cache-Control': 'no-cache',
-      });
-      res.end();
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache' });
+      res.end('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="20"><rect width="82" height="20" fill="#555" rx="3"/><rect x="82" width="38" height="20" fill="#9f9f9f" rx="3"/><g fill="#fff" font-family="Verdana,sans-serif" font-size="11"><text x="41" y="14" text-anchor="middle">smoke test</text><text x="101" y="14" text-anchor="middle">?</text></g></svg>');
     }
     return;
   }
