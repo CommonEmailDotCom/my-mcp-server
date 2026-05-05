@@ -522,6 +522,44 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // ── Smoke latest redirect — links badge to exact run summary page ─────────
+  if (url.pathname === '/smoke-latest' && req.method === 'GET') {
+    try {
+      const statusRes = await fetch('https://raw.githubusercontent.com/CommonEmailDotCom/SaaS-Boilerplate/main/smoke-status.json?t=' + Date.now());
+      const status = await statusRes.json();
+      const runUrl = status.runUrl || 'https://github.com/CommonEmailDotCom/SaaS-Boilerplate/actions/workflows/smoke-test.yml';
+      res.writeHead(302, { 'Location': runUrl, 'Cache-Control': 'no-cache' });
+      res.end();
+    } catch (err) {
+      res.writeHead(302, { 'Location': 'https://github.com/CommonEmailDotCom/SaaS-Boilerplate/actions/workflows/smoke-test.yml' });
+      res.end();
+    }
+    return;
+  }
+
+  // ── Coolify deployment badge ───────────────────────────────────────────────
+  if (url.pathname === '/badge/coolify' && req.method === 'GET') {
+    try {
+      const COOLIFY_API_TOKEN = process.env.COOLIFY_API_TOKEN;
+      const COOLIFY_URL = process.env.COOLIFY_URL || 'http://10.0.1.5:8080';
+      const appRes = await fetch(COOLIFY_URL + '/api/v1/applications/tuk1rcjj16vlk33jrbx3c9d3', {
+        headers: { 'Authorization': 'Bearer ' + COOLIFY_API_TOKEN, 'Accept': 'application/json' }
+      });
+      const app = await appRes.json();
+      const running = app.status && app.status.startsWith('running');
+      const message = running ? 'running' : (app.status || 'unknown');
+      const color = running ? '#2ea44f' : '#e53e3e';
+      const lw = 58; const mw = message.length * 7 + 14; const tw = lw + mw;
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + tw + '" height="20" role="img"><title>coolify: ' + message + '</title><linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient><clipPath id="r"><rect width="' + tw + '" height="20" rx="3" fill="#fff"/></clipPath><g clip-path="url(#r)"><rect width="' + lw + '" height="20" fill="#555"/><rect x="' + lw + '" width="' + mw + '" height="20" fill="' + color + '"/><rect width="' + tw + '" height="20" fill="url(#s)"/></g><g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11"><text x="' + Math.round(lw/2) + '" y="14">coolify</text><text x="' + Math.round(lw+mw/2) + '" y="14">' + message + '</text></g></svg>';
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0' });
+      res.end(svg);
+    } catch (err) {
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache' });
+      res.end('<svg xmlns="http://www.w3.org/2000/svg" width="104" height="20"><rect width="58" height="20" fill="#555" rx="3"/><rect x="58" width="46" height="20" fill="#9f9f9f" rx="3"/><g fill="#fff" font-family="Verdana,sans-serif" font-size="11" text-anchor="middle"><text x="29" y="14">coolify</text><text x="81" y="14">unknown</text></g></svg>');
+    }
+    return;
+  }
+
   // Trigger Coolify deploy (called by GitHub Actions)
   if (url.pathname === "/trigger-deploy" && req.method === "POST") {
     try {
