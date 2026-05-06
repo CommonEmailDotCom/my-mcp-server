@@ -554,7 +554,7 @@ const httpServer = createServer(async (req, res) => {
   // ── Smoke test badge endpoint (serves SVG directly to avoid caching) ───────
   if (url.pathname === '/badge/smoke' && req.method === 'GET') {
     try {
-      const statusRes = await fetch('https://raw.githubusercontent.com/CommonEmailDotCom/SaaS-Boilerplate/main/smoke-status.json?t=' + Date.now());
+      const statusRes = await fetch('https://api.github.com/repos/CommonEmailDotCom/SaaS-Boilerplate/contents/smoke-status.json', { headers: { 'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN, 'Accept': 'application/vnd.github.raw+json', 'Cache-Control': 'no-cache' } });
       const status = await statusRes.json();
       const passing = status.status === 'passing';
       const label = 'smoke test';
@@ -596,7 +596,7 @@ const httpServer = createServer(async (req, res) => {
   // ── Smoke test status JSON endpoint ──────────────────────────────────────
   if (url.pathname === '/smoke-status' && req.method === 'GET') {
     try {
-      const statusRes = await fetch('https://raw.githubusercontent.com/CommonEmailDotCom/SaaS-Boilerplate/main/smoke-status.json');
+      const statusRes = await fetch('https://api.github.com/repos/CommonEmailDotCom/SaaS-Boilerplate/contents/smoke-status.json', { headers: { 'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN, 'Accept': 'application/vnd.github.raw+json', 'Cache-Control': 'no-cache' } });
       const status = await statusRes.json();
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
       res.end(JSON.stringify(status));
@@ -610,7 +610,7 @@ const httpServer = createServer(async (req, res) => {
   // ── Smoke latest redirect — links badge to exact run summary page ─────────
   if (url.pathname === '/smoke-latest' && req.method === 'GET') {
     try {
-      const statusRes = await fetch('https://raw.githubusercontent.com/CommonEmailDotCom/SaaS-Boilerplate/main/smoke-status.json?t=' + Date.now());
+      const statusRes = await fetch('https://api.github.com/repos/CommonEmailDotCom/SaaS-Boilerplate/contents/smoke-status.json', { headers: { 'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN, 'Accept': 'application/vnd.github.raw+json', 'Cache-Control': 'no-cache' } });
       const status = await statusRes.json();
       const runUrl = status.runUrl || 'https://github.com/CommonEmailDotCom/SaaS-Boilerplate/actions/workflows/smoke-test.yml';
       res.writeHead(302, { 'Location': runUrl, 'Cache-Control': 'no-cache' });
