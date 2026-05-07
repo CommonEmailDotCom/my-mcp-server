@@ -16,7 +16,7 @@ const execAsync = promisify(exec);
 const REPO_PATH = process.env.REPO_PATH || "/repo";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = "claude-sonnet-4-6";
-const MAX_TOKENS = 8096;
+const MAX_TOKENS = 16000;
 
 if (!ANTHROPIC_API_KEY) {
   console.error("❌ ANTHROPIC_API_KEY is required — orchestrator will not start");
@@ -41,25 +41,31 @@ async function writeRepoFile(relPath, content) {
 
 async function gitCommitPush(message, authorName, authorEmail) {
   const cmds = [
-    `git -C ${REPO_PATH} config user.name "${authorName}"` ,
-    `git -C ${REPO_PATH} config user.email "${authorEmail}"` ,
+    `git -C ${REPO_PATH} config user.name "${authorName}"`,
+    `git -C ${REPO_PATH} config user.email "${authorEmail}"`,
     `git -C ${REPO_PATH} pull --rebase origin main`,
     `git -C ${REPO_PATH} add -A`,
     `git -C ${REPO_PATH} diff --staged --quiet || git -C ${REPO_PATH} commit -m "${message}"`,
     `git -C ${REPO_PATH} push origin main`,
   ];
   for (const cmd of cmds) {
-    const { stdout, stderr } = await execAsync(cmd, {
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    });
-    if (stdout) console.log(stdout.trim());
-    if (stderr) console.log(stderr.trim());
+    try {
+      const { stdout, stderr } = await execAsync(cmd, {
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      });
+      if (stdout) console.log(stdout.trim());
+      if (stderr) console.log(stderr.trim());
+    } catch (e) {
+      console.error(`❌ git cmd failed: ${cmd}\n${e.message}`);
+      throw e;
+    }
   }
 }
 
 // ── Anthropic API call ────────────────────────────────────────────────────────
 
 async function callClaude(systemPrompt, userMessage) {
+  console.log(`  → Calling Claude API (model: ${MODEL}, max_tokens: ${MAX_TOKENS})...`);
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -81,6 +87,12 @@ async function callClaude(systemPrompt, userMessage) {
   }
 
   const data = await response.json();
+  console.log(`  → stop_reason: ${data.stop_reason}, tokens used: ${data.usage?.input_tokens}in / ${data.usage?.output_tokens}out`);
+
+  if (data.stop_reason === "max_tokens") {
+    console.error("  ⚠️  Response was truncated — hit max_tokens limit");
+  }
+
   return data.content?.[0]?.text || "";
 }
 
@@ -100,11 +112,14 @@ async function loadContext() {
 }
 
 function parseJSON(raw, agentName) {
+  const cleaned = raw.replace(/^```json\n?|\n?```$/g, "").trim();
   try {
-    return JSON.parse(raw.replace(/^```json\n?|\n?```$/g, "").trim());
+    return JSON.parse(cleaned);
   } catch (e) {
-    console.error(`❌ ${agentName} JSON parse failed:`, e.message);
-    console.error("Raw (first 500):", raw.slice(0, 500));
+    console.error(`❌ ${agentName} JSON parse failed: ${e.message}`);
+    console.error(`   Raw response length: ${raw.length} chars`);
+    console.error(`   First 300 chars: ${raw.slice(0, 300)}`);
+    console.error(`   Last 300 chars: ${raw.slice(-300)}`);
     return null;
   }
 }
@@ -126,12 +141,14 @@ HARD RULES:
 - CLAUDE_TEAM.md Current Objectives must reflect reality after every cycle
 - If an agent has been stuck for multiple cycles, suggest a new approach or escalate
 
+IMPORTANT: Keep your file contents concise. CLAUDE_TEAM.md and TASK_BOARD.json should be updated but not unnecessarily verbose. This ensures your response fits within token limits.
+
 Your response must be a single JSON object, no markdown fences, no explanation:
 {
-  "claude_team_md": "<full updated CLAUDE_TEAM.md>",
-  "task_board_json": "<full updated TASK_BOARD.json>",
-  "operator_inbox": "<full updated OPERATOR_INBOX.md>",
-  "observer_inbox": "<full updated OBSERVER_INBOX.md>"
+  "claude_team_md": "<updated CLAUDE_TEAM.md — keep concise>",
+  "task_board_json": "<updated TASK_BOARD.json — keep concise>",
+  "operator_inbox": "<updated OPERATOR_INBOX.md>",
+  "observer_inbox": "<updated OBSERVER_INBOX.md>"
 }`;
 
   const user = `Timestamp: ${ts}
@@ -142,11 +159,11 @@ ${ctx.teamMd}
 --- TASK_BOARD.json ---
 ${ctx.taskBoard}
 
---- BUILD_LOG.md ---
-${ctx.buildLog}
+--- BUILD_LOG.md (last 3000 chars) ---
+${ctx.buildLog.slice(-3000)}
 
---- QA_REPORT.md ---
-${ctx.qaReport}
+--- QA_REPORT.md (last 3000 chars) ---
+${ctx.qaReport.slice(-3000)}
 
 --- OPERATOR_INBOX.md ---
 ${ctx.operatorInbox}
@@ -155,7 +172,8 @@ ${ctx.operatorInbox}
 ${ctx.observerInbox}
 
 Review all files. Identify blockers, completed tasks, idle agents, new risks.
-Update Current Objectives in CLAUDE_TEAM.md, refresh TASK_BOARD.json priorities, write to inboxes if needed.`;
+Update Current Objectives in CLAUDE_TEAM.md, refresh TASK_BOARD.json priorities, write to inboxes if needed.
+Keep file contents concise to avoid token limits.`;
 
   const raw = await callClaude(system, user);
   const parsed = parseJSON(raw, "Manager");
@@ -167,7 +185,7 @@ Update Current Objectives in CLAUDE_TEAM.md, refresh TASK_BOARD.json priorities,
   await writeRepoFile("agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
   await gitCommitPush(`ci: manager cycle ${ts}`, "AI Manager for Cutting Edge Chat", "ai-manager@cuttingedgechat.com");
 
-  console.log(`[${ts}] ✅ Manager complete`);
+  console.log(`[${ts}] ✅ Manager cycle complete`);
 }
 
 // ── Agent: Operator ───────────────────────────────────────────────────────────
@@ -192,8 +210,8 @@ HARD RULES:
 
 Your response must be a single JSON object, no markdown fences, no explanation:
 {
-  "build_log": "<full updated BUILD_LOG.md>",
-  "operator_inbox": "<full updated OPERATOR_INBOX.md — mark messages resolved>",
+  "build_log": "<updated BUILD_LOG.md — append new entry, keep last 2 entries only to save tokens>",
+  "operator_inbox": "<updated OPERATOR_INBOX.md — mark messages resolved>",
   "file_changes": [
     { "path": "relative/path/from/repo/root", "content": "<full file content>" }
   ]
@@ -208,15 +226,15 @@ ${ctx.teamMd}
 --- TASK_BOARD.json ---
 ${ctx.taskBoard}
 
---- BUILD_LOG.md ---
-${ctx.buildLog}
+--- BUILD_LOG.md (last 2000 chars) ---
+${ctx.buildLog.slice(-2000)}
 
 --- OPERATOR_INBOX.md ---
 ${ctx.operatorInbox}
 
 Check your inbox, then execute in_progress tasks assigned to "operator" in the TASK_BOARD.
 Write code changes in file_changes. Update BUILD_LOG.md with what you did, blockers, deploy status.
-If nothing to do, say so clearly in BUILD_LOG.md.`;
+If nothing to do, say so clearly in BUILD_LOG.md with a brief entry.`;
 
   const raw = await callClaude(system, user);
   const parsed = parseJSON(raw, "Operator");
@@ -226,12 +244,12 @@ If nothing to do, say so clearly in BUILD_LOG.md.`;
   await writeRepoFile("agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
 
   for (const change of parsed.file_changes || []) {
-    console.log(`[${ts}] 📝 Writing: ${change.path}`);
+    console.log(`  📝 Writing: ${change.path}`);
     await writeRepoFile(change.path, change.content);
   }
 
   await gitCommitPush(`ci: operator cycle ${ts}`, "AI DevOps for Cutting Edge Chat", "ai-devops@cuttingedgechat.com");
-  console.log(`[${ts}] ✅ Operator complete`);
+  console.log(`[${ts}] ✅ Operator cycle complete`);
 }
 
 // ── Agent: Observer ───────────────────────────────────────────────────────────
@@ -254,12 +272,12 @@ HARD RULES:
 - Clerk regressions are critical — Clerk is permanent, not legacy
 - Never leave QA_REPORT.md unchanged after a cycle — always add a timestamped entry
 
-You can make HTTP fetch calls to test the live app headlessly. Document every step and result.
+IMPORTANT: Keep your QA_REPORT.md concise — append a new entry, keep last 2 entries only.
 
 Your response must be a single JSON object, no markdown fences, no explanation:
 {
-  "qa_report": "<full updated QA_REPORT.md>",
-  "observer_inbox": "<full updated OBSERVER_INBOX.md — mark messages resolved>"
+  "qa_report": "<updated QA_REPORT.md — new entry appended, concise>",
+  "observer_inbox": "<updated OBSERVER_INBOX.md — mark messages resolved>"
 }`;
 
   const user = `Timestamp: ${ts}
@@ -270,14 +288,14 @@ ${ctx.teamMd}
 --- TASK_BOARD.json ---
 ${ctx.taskBoard}
 
---- QA_REPORT.md ---
-${ctx.qaReport}
+--- QA_REPORT.md (last 2000 chars) ---
+${ctx.qaReport.slice(-2000)}
 
 --- OBSERVER_INBOX.md ---
 ${ctx.observerInbox}
 
 Check your inbox, then execute in_progress tasks assigned to "tester" in the TASK_BOARD.
-Run headless HTTP checks against the live app. Log every result. Never leave QA_REPORT.md unchanged.`;
+Run headless HTTP checks against the live app. Log results. Always add a new timestamped entry.`;
 
   const raw = await callClaude(system, user);
   const parsed = parseJSON(raw, "Observer");
@@ -287,7 +305,7 @@ Run headless HTTP checks against the live app. Log every result. Never leave QA_
   await writeRepoFile("agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
   await gitCommitPush(`ci: observer cycle ${ts}`, "AI QA for Cutting Edge Chat", "ai-qa@cuttingedgechat.com");
 
-  console.log(`[${ts}] ✅ Observer complete`);
+  console.log(`[${ts}] ✅ Observer cycle complete`);
 }
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
