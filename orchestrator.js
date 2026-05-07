@@ -39,10 +39,10 @@ async function writeRepoFile(relPath, content) {
   await fs.writeFile(fullPath, content, "utf8");
 }
 
-async function gitCommitPush(message) {
+async function gitCommitPush(message, authorName, authorEmail) {
   const cmds = [
-    `git -C ${REPO_PATH} config user.name "orchestrator[bot]"`,
-    `git -C ${REPO_PATH} config user.email "orchestrator[bot]@cuttingedgechat.com"`,
+    `git -C ${REPO_PATH} config user.name "${authorName}"` ,
+    `git -C ${REPO_PATH} config user.email "${authorEmail}"` ,
     `git -C ${REPO_PATH} pull --rebase origin main`,
     `git -C ${REPO_PATH} add -A`,
     `git -C ${REPO_PATH} diff --staged --quiet || git -C ${REPO_PATH} commit -m "${message}"`,
@@ -165,7 +165,7 @@ Update Current Objectives in CLAUDE_TEAM.md, refresh TASK_BOARD.json priorities,
   await writeRepoFile("agent_sync/TASK_BOARD.json", parsed.task_board_json);
   await writeRepoFile("agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
   await writeRepoFile("agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
-  await gitCommitPush(`ci: manager cycle ${ts}`);
+  await gitCommitPush(`ci: manager cycle ${ts}`, "AI Manager for Cutting Edge Chat", "ai-manager@cuttingedgechat.com");
 
   console.log(`[${ts}] ✅ Manager complete`);
 }
@@ -230,7 +230,7 @@ If nothing to do, say so clearly in BUILD_LOG.md.`;
     await writeRepoFile(change.path, change.content);
   }
 
-  await gitCommitPush(`ci: operator cycle ${ts}`);
+  await gitCommitPush(`ci: operator cycle ${ts}`, "AI DevOps for Cutting Edge Chat", "ai-devops@cuttingedgechat.com");
   console.log(`[${ts}] ✅ Operator complete`);
 }
 
@@ -285,7 +285,7 @@ Run headless HTTP checks against the live app. Log every result. Never leave QA_
 
   await writeRepoFile("agent_sync/QA_REPORT.md", parsed.qa_report);
   await writeRepoFile("agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
-  await gitCommitPush(`ci: observer cycle ${ts}`);
+  await gitCommitPush(`ci: observer cycle ${ts}`, "AI QA for Cutting Edge Chat", "ai-qa@cuttingedgechat.com");
 
   console.log(`[${ts}] ✅ Observer complete`);
 }
