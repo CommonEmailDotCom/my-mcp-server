@@ -275,7 +275,17 @@ async function runManager() {
     "--- OBSERVER_INBOX.md ---\n" + ctx.observerInbox + "\n\n" +
     "Review all files. Update Current Objectives, TASK_BOARD.json, and inboxes as needed.";
 
-  const raw = await callClaude(system, user, true);  // MCP tools enabled — Manager can verify infra claims
+  let raw;
+  try {
+    raw = await callClaude(system, user, true);
+  } catch (e) {
+    if (e.message.includes("Authentication error") || e.message.includes("401") || e.message.includes("400")) {
+      console.error("  -> MCP auth failed, falling back to plain completion:", e.message.slice(0, 100));
+      raw = await callClaude(system, user, false);
+    } else {
+      throw e;
+    }
+  }
   const parsed = parseJSON(raw, "Manager");
   if (!parsed) return;
 
@@ -401,7 +411,18 @@ async function runOperator() {
     "- smokeTestRuns: is the smoke badge healthy?\n" +
     "Check inbox, execute tasks, update BUILD_LOG.md with real data from above.";
 
-  const raw = await callClaude(system, user, true);  // MCP tools enabled — Operator can call run_command, write_file, git_commit_push directly
+  // Try with MCP tools first; fall back to plain completion if auth fails
+  let raw;
+  try {
+    raw = await callClaude(system, user, true);
+  } catch (e) {
+    if (e.message.includes("Authentication error") || e.message.includes("401") || e.message.includes("400")) {
+      console.error("  -> MCP auth failed, falling back to plain completion:", e.message.slice(0, 100));
+      raw = await callClaude(system, user, false);
+    } else {
+      throw e;
+    }
+  }
   const parsed = parseJSON(raw, "Operator");
   if (!parsed) return;
 
