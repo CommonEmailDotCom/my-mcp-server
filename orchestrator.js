@@ -115,21 +115,39 @@ async function commitAndPush(repoPath, message, authorName, authorEmail) {
 
 // ── Anthropic API ─────────────────────────────────────────────────────────────
 
-async function callClaude(systemPrompt, userMessage) {
-  console.log("  -> Calling Claude (" + MODEL + ", max_tokens: " + MAX_TOKENS + ")...");
+async function callClaude(systemPrompt, userMessage, useMcpTools = false) {
+  console.log("  -> Calling Claude (" + MODEL + ", max_tokens: " + MAX_TOKENS + (useMcpTools ? ", MCP tools enabled" : "") + ")...");
+  
+  const body = {
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userMessage }],
+  };
+
+  // When MCP tools are enabled, pass the MCP server so the agent can
+  // call run_command, write_file, git_commit_push etc. directly
+  if (useMcpTools) {
+    body.mcp_servers = [
+      {
+        type: "url",
+        url: "https://mcp.joefuentes.me/mcp",
+        name: "mcp-server"
+      }
+    ];
+    // Claude needs to know to use these tools
+    body.tool_choice = { type: "auto" };
+  }
+
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-api-key": ANTHROPIC_API_KEY,
       "anthropic-version": "2023-06-01",
+      "anthropic-beta": "mcp-client-2025-04-04",
     },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -140,6 +158,14 @@ async function callClaude(systemPrompt, userMessage) {
   const data = await response.json();
   console.log("  -> stop_reason: " + data.stop_reason + ", tokens: " + data.usage?.input_tokens + "in / " + data.usage?.output_tokens + "out");
   if (data.stop_reason === "max_tokens") console.error("  WARNING: Response truncated");
+  
+  // If tools were used, extract all text blocks from the response
+  if (useMcpTools && Array.isArray(data.content)) {
+    return data.content
+      .filter(b => b.type === "text")
+      .map(b => b.text)
+      .join("\n");
+  }
   return data.content?.[0]?.text || "";
 }
 
@@ -323,11 +349,20 @@ async function runOperator() {
     "  - NEVER communicate via commit messages — use OPERATOR_INBOX.md replies only",
     "  - Commit messages: ci: operator cycle [timestamp] when idle, real description when making code changes",
     "",
-    "Respond with ONE JSON object, no markdown fences, no extra text:",
+    "You have MCP tools available. Use them directly to do your work:",
+    "  - run_command: run shell commands (git, node, etc.)",
+    "  - write_file: write files to the repo",
+    "  - read_file: read files from the repo",
+    "  - git_commit_push: stage all changes, commit and push",
+    "  - git_pull: pull latest from main",
+    "  - coolify_trigger_deploy: trigger a Coolify deployment",
+    "  - query_postgres: run DB queries",
+    "",
+    "WORKFLOW: Use tools to do real work, THEN respond with JSON summary.",
+    "Respond with ONE JSON object after completing your tool calls:",
     "{\"build_log\":\"...\",\"operator_inbox\":\"...\",\"file_changes\":[]}",
-    "file_changes is an EMPTY ARRAY when you have no code to write. Only add entries when you have real code changes.",
-    "NEVER invent placeholder or marker files just to populate file_changes. Empty array is correct for standby cycles.",
-    "file_changes entries must ONLY use paths starting with src/ or migrations/."
+    "file_changes can be empty [] — you used tools to write files directly.",
+    "The JSON response is just a summary/log — the actual work happens via tool calls."
   ].join("\n");
   // Fetch live data so Operator has real build/deploy state
   let liveData = {};
@@ -352,7 +387,7 @@ async function runOperator() {
     "- smokeTestRuns: is the smoke badge healthy?\n" +
     "Check inbox, execute tasks, update BUILD_LOG.md with real data from above.";
 
-  const raw = await callClaude(system, user);
+  const raw = await callClaude(system, user, true);  // MCP tools enabled — Operator can call run_command, write_file, git_commit_push directly
   const parsed = parseJSON(raw, "Operator");
   if (!parsed) return;
 
