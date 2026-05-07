@@ -244,8 +244,10 @@ async function runOperator() {
     "  - Always update BUILD_LOG.md every cycle — keep last 2 entries only",
     "",
     "Respond with ONE JSON object, no markdown fences, no extra text:",
-    "{\"build_log\":\"...\",\"operator_inbox\":\"...\",\"file_changes\":[{\"path\":\"src/...\",\"content\":\"...\"}]}",
-    "IMPORTANT: file_changes must ONLY contain paths starting with src/ or migrations/."
+    "{\"build_log\":\"...\",\"operator_inbox\":\"...\",\"file_changes\":[]}",
+    "file_changes is an EMPTY ARRAY when you have no code to write. Only add entries when you have real code changes.",
+    "NEVER invent placeholder or marker files just to populate file_changes. Empty array is correct for standby cycles.",
+    "file_changes entries must ONLY use paths starting with src/ or migrations/."
   ].join("\n");
   // Fetch live data so Operator has real build/deploy state
   let liveData = {};
