@@ -350,7 +350,7 @@ async function fetchLiveData(ghToken, repo) {
 
   // Latest observer-qa.yml runs (last 3)
   try {
-    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/runs?per_page=3&workflow_id=observer-qa.yml", { headers: ghHeaders });
+    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/workflows/272374889/runs?per_page=3", { headers: ghHeaders });
     const d = await r.json();
     results.observerQaRuns = (d.workflow_runs || []).map(r => ({
       id: r.id, conclusion: r.conclusion || r.status,
@@ -360,7 +360,7 @@ async function fetchLiveData(ghToken, repo) {
 
   // Latest observer-qa.yml run — full job/step breakdown
   try {
-    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/runs?per_page=1&workflow_id=observer-qa.yml", { headers: ghHeaders });
+    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/workflows/272374889/runs?per_page=1", { headers: ghHeaders });
     const d = await r.json();
     const run = d.workflow_runs?.[0];
     if (run) {
@@ -379,7 +379,7 @@ async function fetchLiveData(ghToken, repo) {
 
   // Latest smoke-test.yml runs (last 3)
   try {
-    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/runs?per_page=3&workflow_id=smoke-test.yml", { headers: ghHeaders });
+    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/workflows/271525944/runs?per_page=3", { headers: ghHeaders });
     const d = await r.json();
     results.smokeTestRuns = (d.workflow_runs || []).map(r => ({
       id: r.id, conclusion: r.conclusion || r.status,
@@ -389,7 +389,7 @@ async function fetchLiveData(ghToken, repo) {
 
   // Latest set-version runs (last 3) — tells us if build deployed
   try {
-    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/runs?per_page=3&workflow_id=set-version.yml", { headers: ghHeaders });
+    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/workflows/271188882/runs?per_page=3", { headers: ghHeaders });
     const d = await r.json();
     results.setVersionRuns = (d.workflow_runs || []).map(r => ({
       id: r.id, conclusion: r.conclusion || r.status,
@@ -404,7 +404,7 @@ async function fetchLiveData(ghToken, repo) {
     const recentPass = runs.find(r => r.conclusion === 'success' && r.created > thirtyMinAgo);
     if (!recentPass) {
       const dr = await fetch(
-        "https://api.github.com/repos/" + repo + "/actions/workflows/observer-qa.yml/dispatches",
+        "https://api.github.com/repos/" + repo + "/actions/workflows/272374889/dispatches",
         { method: "POST", headers: { ...ghHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ ref: "main" }) }
       );
       results.autoDispatch = dr.status === 204 ? "dispatched" : "failed (" + dr.status + ")";
