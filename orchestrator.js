@@ -136,7 +136,7 @@ async function callClaude(systemPrompt, userMessage, useMcpTools = false) {
         authorization_token: process.env.BEARER_TOKEN || ""
       }
     ];
-    // Claude needs to know to use these tools
+    body.tools = [{ type: "mcp_toolset", mcp_server_name: "mcp-server" }];
     body.tool_choice = { type: "auto" };
   }
 
@@ -146,7 +146,7 @@ async function callClaude(systemPrompt, userMessage, useMcpTools = false) {
       "Content-Type": "application/json",
       "x-api-key": ANTHROPIC_API_KEY,
       "anthropic-version": "2023-06-01",
-      "anthropic-beta": "mcp-client-2025-04-04",
+      "anthropic-beta": "mcp-client-2025-11-20",
     },
     body: JSON.stringify(body),
   });
