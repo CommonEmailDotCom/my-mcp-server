@@ -274,6 +274,79 @@ async function runOperator() {
   console.log("[" + ts + "] Operator complete");
 }
 
+
+// ── Live data fetcher for Observer ───────────────────────────────────────────
+
+async function fetchLiveData(ghToken, repo) {
+  const results = {};
+  const ghHeaders = {
+    "Authorization": "Bearer " + ghToken,
+    "Accept": "application/vnd.github+json"
+  };
+
+  // Live SHA
+  try {
+    const r = await fetch("https://cuttingedgechat.com/api/version");
+    results.liveSha = (await r.json()).sha || "unknown";
+  } catch (e) { results.liveSha = "ERROR: " + e.message; }
+
+  // Smoke status from file
+  try {
+    results.smokeStatus = JSON.parse(fs.readFileSync("/repo-observer/smoke-status.json", "utf8"));
+  } catch (e) { results.smokeStatus = "not readable: " + e.message; }
+
+  // Latest observer-qa.yml runs (last 3)
+  try {
+    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/runs?per_page=3&workflow_id=observer-qa.yml", { headers: ghHeaders });
+    const d = await r.json();
+    results.observerQaRuns = (d.workflow_runs || []).map(r => ({
+      id: r.id, conclusion: r.conclusion || r.status,
+      sha: r.head_sha?.slice(0,7), created: r.created_at?.slice(11,19)
+    }));
+  } catch (e) { results.observerQaRuns = "ERROR: " + e.message; }
+
+  // Latest observer-qa.yml run — full job/step breakdown
+  try {
+    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/runs?per_page=1&workflow_id=observer-qa.yml", { headers: ghHeaders });
+    const d = await r.json();
+    const run = d.workflow_runs?.[0];
+    if (run) {
+      const jr = await fetch("https://api.github.com/repos/" + repo + "/actions/runs/" + run.id + "/jobs", { headers: ghHeaders });
+      const jd = await jr.json();
+      results.latestObserverQaDetail = {
+        id: run.id, conclusion: run.conclusion || run.status,
+        sha: run.head_sha?.slice(0,7), created: run.created_at,
+        jobs: (jd.jobs || []).map(j => ({
+          name: j.name, conclusion: j.conclusion || j.status,
+          steps: (j.steps || []).map(s => (s.conclusion||s.status) + " [" + s.number + "] " + s.name)
+        }))
+      };
+    }
+  } catch (e) { results.latestObserverQaDetail = "ERROR: " + e.message; }
+
+  // Latest smoke-test.yml runs (last 3)
+  try {
+    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/runs?per_page=3&workflow_id=smoke-test.yml", { headers: ghHeaders });
+    const d = await r.json();
+    results.smokeTestRuns = (d.workflow_runs || []).map(r => ({
+      id: r.id, conclusion: r.conclusion || r.status,
+      sha: r.head_sha?.slice(0,7), created: r.created_at?.slice(11,19)
+    }));
+  } catch (e) { results.smokeTestRuns = "ERROR: " + e.message; }
+
+  // Latest set-version runs (last 3) — tells us if build deployed
+  try {
+    const r = await fetch("https://api.github.com/repos/" + repo + "/actions/runs?per_page=3&workflow_id=set-version.yml", { headers: ghHeaders });
+    const d = await r.json();
+    results.setVersionRuns = (d.workflow_runs || []).map(r => ({
+      id: r.id, conclusion: r.conclusion || r.status,
+      sha: r.head_sha?.slice(0,7), created: r.created_at?.slice(11,19)
+    }));
+  } catch (e) { results.setVersionRuns = "ERROR: " + e.message; }
+
+  return results;
+}
+
 // ── Agent: Observer ───────────────────────────────────────────────────────────
 
 async function runObserver() {
@@ -309,12 +382,31 @@ async function runObserver() {
     "Respond with ONE JSON object, no markdown fences, no extra text:",
     "{\"qa_report\":\"...\",\"observer_inbox\":\"...\"}"
   ].join("\n");
+  // Fetch real live data so Observer has actual facts
+  let liveData = {};
+  try {
+    liveData = await fetchLiveData(GITHUB_TOKEN, GITHUB_REPO);
+    console.log("  -> live data fetched: SHA=" + liveData.liveSha + " latestQaRun=" + liveData.latestObserverQaDetail?.conclusion);
+  } catch (e) {
+    console.error("  -> fetchLiveData error:", e.message);
+  }
+
   const user = "Timestamp: " + ts + "\n\n" +
     "--- CLAUDE_TEAM.md ---\n" + ctx.teamMd + "\n\n" +
     "--- TASK_BOARD.json ---\n" + ctx.taskBoard + "\n\n" +
     "--- QA_REPORT.md (last 2000 chars) ---\n" + ctx.qaReport.slice(-2000) + "\n\n" +
     "--- OBSERVER_INBOX.md ---\n" + ctx.observerInbox + "\n\n" +
-    "Check inbox, run headless checks against live app, log results.";
+    "--- LIVE DATA (pre-fetched by orchestrator — use this, do not say you lack network access) ---\n" +
+    JSON.stringify(liveData, null, 2) + "\n\n" +
+    "INSTRUCTIONS: The LIVE DATA above is real current state fetched this cycle. Use it to write an accurate report.\n" +
+    "- liveSha: what is actually live on cuttingedgechat.com right now\n" +
+    "- latestObserverQaDetail: full step-by-step result of the most recent observer-qa.yml run\n" +
+    "- smokeTestRuns: recent smoke test results\n" +
+    "- setVersionRuns: recent build deployments\n" +
+    "Do NOT write 'PENDING — owner must check'. You have the data — use it.\n" +
+    "If latestObserverQaDetail.conclusion is 'failure', identify exactly which steps failed and what to fix.\n" +
+    "If latestObserverQaDetail.conclusion is 'success', declare T-001 PASS and instruct Operator to deploy T-007+T-010.\n" +
+    "Update OBSERVER_INBOX.md only if you have something new to tell Manager (e.g. new failure, T-001 PASS signal).";
 
   const raw = await callClaude(system, user);
   const parsed = parseJSON(raw, "Observer");
