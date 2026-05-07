@@ -132,7 +132,8 @@ async function callClaude(systemPrompt, userMessage, useMcpTools = false) {
       {
         type: "url",
         url: "https://mcp.joefuentes.me/mcp",
-        name: "mcp-server"
+        name: "mcp-server",
+        authorization_token: process.env.BEARER_TOKEN || ""
       }
     ];
     // Claude needs to know to use these tools
@@ -583,6 +584,7 @@ async function runObserver() {
     const t001Script = REPO_OBSERVER + "/scripts/t001-run.js";
     const { stdout, stderr } = await execAsync("node " + t001Script, {
       timeout: 120000,
+      cwd: REPO_OBSERVER,
       env: { ...process.env }
     });
     t001Result = stdout.slice(-3000);
