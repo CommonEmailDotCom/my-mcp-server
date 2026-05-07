@@ -388,6 +388,23 @@ async function fetchLiveData(ghToken, repo) {
     }));
   } catch (e) { results.setVersionRuns = "ERROR: " + e.message; }
 
+  // Auto-dispatch observer-qa.yml if no passing run in last 30 minutes
+  try {
+    const runs = results.observerQaRuns || [];
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const recentPass = runs.find(r => r.conclusion === 'success' && r.created > thirtyMinAgo);
+    if (!recentPass) {
+      const dr = await fetch(
+        "https://api.github.com/repos/" + repo + "/actions/workflows/observer-qa.yml/dispatches",
+        { method: "POST", headers: { ...ghHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ ref: "main" }) }
+      );
+      results.autoDispatch = dr.status === 204 ? "dispatched" : "failed (" + dr.status + ")";
+      console.log("  -> observer-qa auto-dispatch:", results.autoDispatch);
+    } else {
+      results.autoDispatch = "skipped — recent pass found";
+    }
+  } catch (e) { results.autoDispatch = "ERROR: " + e.message; }
+
   return results;
 }
 
