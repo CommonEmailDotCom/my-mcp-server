@@ -228,6 +228,7 @@ async function runManager() {
   await writeRepoFile(REPO_MANAGER, "agent_sync/TASK_BOARD.json", parsed.task_board_json);
   await writeRepoFile(REPO_MANAGER, "agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
   await writeRepoFile(REPO_MANAGER, "agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
+  await writeRepoFile(REPO_MANAGER, "agent_sync/.manager-heartbeat", new Date().toISOString() + "\n");
   await commitAndPush(REPO_MANAGER, "ci: manager cycle " + ts, "AI Manager for Cutting Edge Chat", "managercuttingedgechat@commonemail.com");
 
   console.log("[" + ts + "] Manager complete");
@@ -337,6 +338,8 @@ async function runOperator() {
   if (!parsed) return;
 
   await writeRepoFile(REPO_OPERATOR, "agent_sync/BUILD_LOG.md", parsed.build_log);
+  // Always write heartbeat so cron cycle is visible in git history
+  await writeRepoFile(REPO_OPERATOR, "agent_sync/.operator-heartbeat", new Date().toISOString() + "\n");
   await writeRepoFile(REPO_OPERATOR, "agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
   for (const change of parsed.file_changes || []) {
     if (!change.path.startsWith("src/") && !change.path.startsWith("migrations/")) {
@@ -510,6 +513,7 @@ async function runObserver() {
 
   await syncToMain(REPO_OBSERVER);
   await writeRepoFile(REPO_OBSERVER, "agent_sync/QA_REPORT.md", parsed.qa_report);
+  await writeRepoFile(REPO_OBSERVER, "agent_sync/.observer-heartbeat", new Date().toISOString() + "\n");
   await writeRepoFile(REPO_OBSERVER, "agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
   await commitAndPush(REPO_OBSERVER, "ci: observer cycle " + ts, "AI QA for Cutting Edge Chat", "testercuttingedgechat@gmail.com");
 
