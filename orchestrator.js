@@ -497,13 +497,29 @@ async function runObserver() {
     "Your repo checkout: /repo-observer (isolated — no conflicts with other agents)",
     "Live app: https://cuttingedgechat.com | Authentik: https://auth.joefuentes.me",
     "",
-    "YOUR ROLE: Analyze test results, log findings, report bugs. The orchestrator runs the T-001 test script automatically each cycle and provides results in LIVE DATA. You interpret those results and write a clear QA_REPORT entry.",
-    "FILES YOU OWN (the ONLY files you may write):",
-    "  agent_sync/QA_REPORT.md, agent_sync/OBSERVER_INBOX.md",
+    "YOUR ROLE: QA engineer. You write and maintain tests, analyze results, report bugs.",
+    "  - You ARE a developer for test code. Write, improve, and fix test files.",
+    "  - You are NOT a developer for application source code. Never touch src/.",
+    "  - The orchestrator runs T-001 automatically and gives you results in LIVE DATA. Interpret them.",
     "",
-    "FILES YOU MUST NEVER TOUCH:",
-    "  src/, migrations/, .github/, scripts/, e2e/, tests/, playwright.config.ts,",
-    "  package.json, CLAUDE_TEAM.md, agent_sync/TASK_BOARD.json,",
+    "FILES YOU OWN — you may freely read and write these:",
+    "  agent_sync/QA_REPORT.md        — your primary output every cycle",
+    "  agent_sync/OBSERVER_INBOX.md   — replies to Manager",
+    "  e2e/**                          — Playwright end-to-end specs",
+    "  tests/**                        — unit/integration test files",
+    "  scripts/t001-run.js            — T-001 MCP server test script",
+    "  scripts/smoke-summary.js       — smoke summary generator",
+    "  playwright.config.ts           — Playwright config",
+    "",
+    "WHAT YOU CAN TOUCH:",
+    "  e2e/**, tests/**, scripts/**    — PRIMARY. Own these fully.",
+    "  playwright.config.ts            — yours to maintain",
+    "  src/**                          — YES, but ONLY to fix bugs discovered while testing. No feature work.",
+    "  migrations/**                   — only if a schema issue is blocking a test",
+    "",
+    "NEVER TOUCH:",
+    "  .github/workflows/smoke-test.yml, set-version.yml, typecheck.yml",
+    "  CLAUDE_TEAM.md, agent_sync/TASK_BOARD.json",
     "  agent_sync/BUILD_LOG.md, agent_sync/OPERATOR_INBOX.md",
     "",
     "HARD RULES:",
@@ -553,6 +569,15 @@ async function runObserver() {
   await writeRepoFile(REPO_OBSERVER, "agent_sync/QA_REPORT.md", parsed.qa_report);
   await writeRepoFile(REPO_OBSERVER, "agent_sync/.observer-heartbeat", new Date().toISOString() + "\n");
   await writeRepoFile(REPO_OBSERVER, "agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
+
+  const obsNeverTouch = ["agent_sync/TASK_BOARD.json", "agent_sync/BUILD_LOG.md", "agent_sync/OPERATOR_INBOX.md", "CLAUDE_TEAM.md", ".github/workflows/smoke-test.yml", ".github/workflows/set-version.yml", ".github/workflows/typecheck.yml"];
+  for (const change of parsed.file_changes || []) {
+    const blocked = obsNeverTouch.some(p => change.path === p || change.path.startsWith(p));
+    if (blocked) { console.error("  BLOCKED Observer: " + change.path); continue; }
+    console.log("  Observer writing: " + change.path);
+    await writeRepoFile(REPO_OBSERVER, change.path, change.content);
+  }
+
   await commitAndPush(REPO_OBSERVER, "ci: observer cycle " + ts, "AI QA for Cutting Edge Chat", "testercuttingedgechat@gmail.com");
 
   console.log("[" + ts + "] Observer complete");
