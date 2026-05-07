@@ -389,7 +389,14 @@ async function fetchLiveData(ghToken, repo) {
 
   // Smoke status from file
   try {
-    results.smokeStatus = JSON.parse(fs.readFileSync("/repo-observer/smoke-status.json", "utf8"));
+    const smokeRes = await fetch(
+      "https://api.github.com/repos/" + repo + "/contents/smoke-status.json",
+      { headers: { ...ghHeaders, "Accept": "application/vnd.github+json" } }
+    );
+    const smokeJson = await smokeRes.json();
+    results.smokeStatus = smokeJson.content
+      ? JSON.parse(Buffer.from(smokeJson.content, "base64").toString())
+      : "not found";
   } catch (e) { results.smokeStatus = "not readable: " + e.message; }
 
   // Latest observer-qa.yml runs (last 3)
