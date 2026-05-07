@@ -516,24 +516,9 @@ async function fetchLiveData(ghToken, repo) {
   } catch (e) { results.autoDispatch = "ERROR: " + e.message; }
 
 
-  // Run T-001 test script directly on MCP server
-  try {
-    const t001Script = REPO_OBSERVER + "/scripts/t001-run.js";
-    let scriptExists = false;
-    try { fs.accessSync ? fs.accessSync(t001Script) : await fsPromises.access(t001Script); scriptExists = true; } catch {}
-    if (scriptExists) {
-      const { stdout, stderr } = await execAsync("node " + t001Script, {
-        timeout: 120000,
-        env: { ...process.env }
-      });
-      results.t001Result = stdout.slice(-3000);
-      if (stderr) results.t001Stderr = stderr.slice(-500);
-    } else {
-      results.t001Result = "script not found at " + t001Script;
-    }
-  } catch (e) {
-    results.t001Result = "ERROR running t001 script: " + e.message;
-  }
+  // T-001 is run in runObserver() after ensureRepo — not here
+  // (avoids "script not found" when /repo-observer hasn't been cloned yet)
+  results.t001Result = "pending — will run in Observer cycle";
 
   return results;
 }
@@ -591,13 +576,33 @@ async function runObserver() {
     "Respond with ONE JSON object, no markdown fences, no extra text:",
     "{\"qa_report\":\"...\",\"observer_inbox\":\"...\"}"
   ].join("\n");
-  // Fetch real live data so Observer has actual facts
+  // Run T-001 NOW — after ensureRepo so /repo-observer/scripts/t001-run.js exists
+  let t001Result = "not run";
+  let t001Stderr = "";
+  try {
+    const t001Script = REPO_OBSERVER + "/scripts/t001-run.js";
+    const { stdout, stderr } = await execAsync("node " + t001Script, {
+      timeout: 120000,
+      env: { ...process.env }
+    });
+    t001Result = stdout.slice(-3000);
+    t001Stderr = stderr.slice(-500);
+    console.log("  -> T-001 run complete, last line:", stdout.trim().split("\n").pop());
+  } catch (e) {
+    t001Result = "ERROR: " + e.message;
+    console.error("  -> T-001 run error:", e.message);
+  }
+
+  // Fetch live data (without T-001 — already ran above)
   let liveData = {};
   try {
     liveData = await fetchLiveData(GITHUB_TOKEN, GITHUB_REPO);
+    liveData.t001Result = t001Result;
+    if (t001Stderr) liveData.t001Stderr = t001Stderr;
     console.log("  -> live data fetched: SHA=" + liveData.liveSha + " latestQaRun=" + liveData.latestObserverQaDetail?.conclusion);
   } catch (e) {
     console.error("  -> fetchLiveData error:", e.message);
+    liveData = { t001Result, t001Stderr };
   }
 
   const user = "Timestamp: " + ts + "\n\n" +
