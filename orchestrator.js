@@ -196,7 +196,7 @@ async function runManager() {
   await writeRepoFile(REPO_MANAGER, "agent_sync/TASK_BOARD.json", parsed.task_board_json);
   await writeRepoFile(REPO_MANAGER, "agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
   await writeRepoFile(REPO_MANAGER, "agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
-  await commitAndPush(REPO_MANAGER, "ci: manager cycle " + ts, "AI Manager for Cutting Edge Chat", "ai-manager@users.noreply.github.com");
+  await commitAndPush(REPO_MANAGER, "ci: manager cycle " + ts, "AI Manager for Cutting Edge Chat", "282509319+managercuttingedgechat@users.noreply.github.com");
 
   console.log("[" + ts + "] Manager complete");
 }
@@ -289,7 +289,7 @@ async function runOperator() {
     console.log("  Writing: " + change.path);
     await writeRepoFile(REPO_OPERATOR, change.path, change.content);
   }
-  await commitAndPush(REPO_OPERATOR, "ci: operator cycle " + ts, "AI DevOps for Cutting Edge Chat", "ai-devops@users.noreply.github.com");
+  await commitAndPush(REPO_OPERATOR, "ci: operator cycle " + ts, "AI DevOps for Cutting Edge Chat", "282507350+DevOpsCuttingEdgeChat@users.noreply.github.com");
 
   console.log("[" + ts + "] Operator complete");
 }
@@ -437,7 +437,7 @@ async function runObserver() {
   await syncToMain(REPO_OBSERVER);
   await writeRepoFile(REPO_OBSERVER, "agent_sync/QA_REPORT.md", parsed.qa_report);
   await writeRepoFile(REPO_OBSERVER, "agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
-  await commitAndPush(REPO_OBSERVER, "ci: observer cycle " + ts, "AI QA for Cutting Edge Chat", "ai-qa@users.noreply.github.com");
+  await commitAndPush(REPO_OBSERVER, "ci: observer cycle " + ts, "AI QA for Cutting Edge Chat", "282500916+testercuttingedgechat@users.noreply.github.com");
 
   console.log("[" + ts + "] Observer complete");
 }
