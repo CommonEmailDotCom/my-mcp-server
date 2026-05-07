@@ -67,23 +67,48 @@ async function writeRepoFile(repoPath, relPath, content) {
 }
 
 async function commitAndPush(repoPath, message, authorName, authorEmail) {
-  const cmds = [
-    "git -C " + repoPath + " config user.name \"" + authorName + "\"",
-    "git -C " + repoPath + " config user.email \"" + authorEmail + "\"",
-    "git -C " + repoPath + " add -A",
-    "git -C " + repoPath + " diff --staged --quiet || git -C " + repoPath + " commit --author=\"" + authorName + " <" + authorEmail + ">\" -m \"" + message + "\"",
-    "git -C " + repoPath + " push origin main",
-  ];
-  for (const cmd of cmds) {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  const run = (cmd) => execAsync(cmd, { env }).then(({ stdout, stderr }) => {
+    if (stdout.trim()) console.log(stdout.trim());
+    if (stderr.trim()) console.log(stderr.trim());
+  });
+
+  // Set identity and stage
+  await run("git -C " + repoPath + " config user.name \"" + authorName + "\"");
+  await run("git -C " + repoPath + " config user.email \"" + authorEmail + "\"");
+  await run("git -C " + repoPath + " add -A");
+
+  // Commit (no-op if nothing staged)
+  try {
+    await run("git -C " + repoPath + " diff --staged --quiet || git -C " + repoPath + " commit --author=\"" + authorName + " <" + authorEmail + ">\" -m \"" + message + "\"");
+  } catch (e) {
+    console.error("commit failed: " + e.message);
+    throw e;
+  }
+
+  // Push with retry — other agents may have pushed during the Claude API call
+  const MAX_RETRIES = 5;
+  for (let i = 1; i <= MAX_RETRIES; i++) {
     try {
-      const { stdout, stderr } = await execAsync(cmd, {
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-      });
-      if (stdout) console.log(stdout.trim());
-      if (stderr) console.log(stderr.trim());
+      await run("git -C " + repoPath + " push origin main");
+      console.log("  -> push succeeded on attempt " + i);
+      return;
     } catch (e) {
-      console.error("git cmd failed: " + cmd + "\n" + e.message);
-      throw e;
+      if (i === MAX_RETRIES) {
+        console.error("  -> push failed after " + MAX_RETRIES + " attempts: " + e.message);
+        throw e;
+      }
+      console.log("  -> push rejected (attempt " + i + "), rebasing and retrying...");
+      try {
+        await run("git -C " + repoPath + " fetch origin main");
+        await run("git -C " + repoPath + " rebase origin/main");
+      } catch (rebaseErr) {
+        console.error("  -> rebase failed: " + rebaseErr.message);
+        // Abort rebase and re-apply on fresh base
+        await run("git -C " + repoPath + " rebase --abort").catch(() => {});
+        await run("git -C " + repoPath + " reset --hard origin/main");
+        throw rebaseErr;
+      }
     }
   }
 }
@@ -278,7 +303,6 @@ async function runOperator() {
   const parsed = parseJSON(raw, "Operator");
   if (!parsed) return;
 
-  await syncToMain(REPO_OPERATOR);
   await writeRepoFile(REPO_OPERATOR, "agent_sync/BUILD_LOG.md", parsed.build_log);
   await writeRepoFile(REPO_OPERATOR, "agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
   for (const change of parsed.file_changes || []) {
