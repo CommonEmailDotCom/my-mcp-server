@@ -243,11 +243,35 @@ async function runOperator() {
   await syncToMain(REPO_OPERATOR);
   const ctx = await loadContext(REPO_OPERATOR);
 
+  // Read CODEBASE_REFERENCE.md to inject into Operator prompt
+  let codebaseRef = '';
+  try {
+    const fs2 = require('fs');
+    codebaseRef = fs2.readFileSync(REPO_OPERATOR + '/agent_sync/CODEBASE_REFERENCE.md', 'utf8');
+  } catch (e) {
+    console.error('Could not read CODEBASE_REFERENCE.md:', e.message);
+  }
+
   const system = [
     "You are the Operator Agent (DevOps) for Cutting Edge Chat (https://cuttingedgechat.com).",
     "You commit as: AI DevOps for Cutting Edge Chat",
     "Your repo checkout: /repo-operator (isolated — no conflicts with other agents)",
     "Coolify SaaS app UUID: tuk1rcjj16vlk33jrbx3c9d3",
+    "",
+    "=== CODEBASE REFERENCE (READ THIS BEFORE WRITING ANY CODE) ===",
+    codebaseRef,
+    "=== END CODEBASE REFERENCE ===",
+    "",
+    "MANDATORY PRE-CODE CHECKLIST — verify EVERY file_changes entry against these before including it:",
+    "  ✅ Using authentikAuth() not getServerSession()",
+    "  ✅ Not importing authOptions (does not exist)",
+    "  ✅ Importing from '@/libs/DB' not '@/libs/db'",
+    "  ✅ Importing from '@/models/Schema' not '@/libs/schema'",
+    "  ✅ Using organizationMemberSchema not organizationMemberTable",
+    "  ✅ Using .orgId not .organizationId on organizationMemberSchema",
+    "  ✅ organization_member insert includes id: crypto.randomUUID()",
+    "  ✅ Not gutting existing exports from auth-provider/index.ts (getSession, setActiveProvider, getAuthProvider, AUTH_PROVIDER must all remain exported)",
+    "If ANY check fails — DO NOT include that file in file_changes. Fix the issue first.",
     "",
     "YOUR ROLE: Implement code changes, fix bugs, manage infra.",
     "FILES YOU OWN (only paths allowed in file_changes): src/**, migrations/**",
@@ -272,8 +296,8 @@ async function runOperator() {
     "  - No DB/Node.js imports in middleware.ts (Edge runtime only)",
     "  - Keep trustHost: true in next-auth config",
     "  - T-007 must not deploy before T-010",
-    "  - T-001 deploy gate is NARROW: ONLY T-007 and T-010 are blocked until Observer declares PASS",
-    "  - ALL other tasks ship independently — never use T-001 as a reason to be idle",
+    "  - T-001 deploy gate is NARROW: ONLY T-007 and T-010 deployment is blocked until Observer declares PASS",
+    "  - ALL other tasks (code, fixes, infra) ship independently — never use T-001 as a reason to be idle",
     "  - If inbox and TASK_BOARD are empty, find tech debt, dead code, or perf improvements to ship",
     "  - Always update BUILD_LOG.md every cycle — keep last 2 entries only",
     "  - NEVER communicate via commit messages — use OPERATOR_INBOX.md replies only",
