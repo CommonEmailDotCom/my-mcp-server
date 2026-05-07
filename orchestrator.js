@@ -2,7 +2,10 @@
 
 /**
  * Agent Orchestrator
- * Round-robin: Manager :00/:15/:30/:45 → Operator :05/:20/:35/:50 → Observer :10/:25/:40/:55
+ * Round-robin: Manager :00/:15/:30/:45 -> Operator :05/:20/:35/:50 -> Observer :10/:25/:40/:55
+ *
+ * Each agent has its own repo checkout. Git discipline per agent:
+ * fetch + reset --hard to origin/main, write changes, single commit, push.
  */
 
 import cron from "node-cron";
@@ -13,40 +16,63 @@ import { promisify } from "util";
 
 const execAsync = promisify(exec);
 
-const REPO_PATH = process.env.REPO_PATH || "/repo";
+const GITHUB_REPO    = process.env.GITHUB_REPO || "CommonEmailDotCom/SaaS-Boilerplate";
+const GITHUB_TOKEN   = process.env.GITHUB_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const MODEL = "claude-sonnet-4-6";
-const MAX_TOKENS = 16000;
+const MODEL          = "claude-sonnet-4-6";
+const MAX_TOKENS     = 16000;
+
+const REPO_MANAGER  = "/repo-manager";
+const REPO_OPERATOR = "/repo-operator";
+const REPO_OBSERVER = "/repo-observer";
 
 if (!ANTHROPIC_API_KEY) {
-  console.error("❌ ANTHROPIC_API_KEY is required — orchestrator will not start");
+  console.error("ANTHROPIC_API_KEY is required");
   process.exit(1);
 }
 
-// ── File helpers ──────────────────────────────────────────────────────────────
+// ── Repo helpers ──────────────────────────────────────────────────────────────
 
-async function readRepoFile(relPath) {
+async function ensureRepo(repoPath) {
   try {
-    return await fs.readFile(path.join(REPO_PATH, relPath), "utf8");
+    await fs.access(path.join(repoPath, ".git"));
   } catch {
-    return `(file not found: ${relPath})`;
+    console.log("  -> Cloning into " + repoPath + "...");
+    await execAsync(
+      "git clone https://" + GITHUB_TOKEN + "@github.com/" + GITHUB_REPO + " " + repoPath,
+      { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }
+    );
   }
 }
 
-async function writeRepoFile(relPath, content) {
-  const fullPath = path.join(REPO_PATH, relPath);
+async function syncToMain(repoPath) {
+  await execAsync(
+    "git -C " + repoPath + " fetch origin main && git -C " + repoPath + " reset --hard origin/main",
+    { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }
+  );
+}
+
+async function readRepoFile(repoPath, relPath) {
+  try {
+    return await fs.readFile(path.join(repoPath, relPath), "utf8");
+  } catch {
+    return "(file not found: " + relPath + ")";
+  }
+}
+
+async function writeRepoFile(repoPath, relPath, content) {
+  const fullPath = path.join(repoPath, relPath);
   await fs.mkdir(path.dirname(fullPath), { recursive: true });
   await fs.writeFile(fullPath, content, "utf8");
 }
 
-async function gitCommitPush(message, authorName, authorEmail) {
+async function commitAndPush(repoPath, message, authorName, authorEmail) {
   const cmds = [
-    `git -C ${REPO_PATH} config user.name "${authorName}"`,
-    `git -C ${REPO_PATH} config user.email "${authorEmail}"`,
-    `git -C ${REPO_PATH} pull --rebase origin main`,
-    `git -C ${REPO_PATH} add -A`,
-    `git -C ${REPO_PATH} diff --staged --quiet || git -C ${REPO_PATH} commit -m "${message}"`,
-    `git -C ${REPO_PATH} push origin main`,
+    "git -C " + repoPath + " config user.name \"" + authorName + "\"",
+    "git -C " + repoPath + " config user.email \"" + authorEmail + "\"",
+    "git -C " + repoPath + " add -A",
+    "git -C " + repoPath + " diff --staged --quiet || git -C " + repoPath + " commit -m \"" + message + "\"",
+    "git -C " + repoPath + " push origin main",
   ];
   for (const cmd of cmds) {
     try {
@@ -56,16 +82,16 @@ async function gitCommitPush(message, authorName, authorEmail) {
       if (stdout) console.log(stdout.trim());
       if (stderr) console.log(stderr.trim());
     } catch (e) {
-      console.error(`❌ git cmd failed: ${cmd}\n${e.message}`);
+      console.error("git cmd failed: " + cmd + "\n" + e.message);
       throw e;
     }
   }
 }
 
-// ── Anthropic API call ────────────────────────────────────────────────────────
+// ── Anthropic API ─────────────────────────────────────────────────────────────
 
 async function callClaude(systemPrompt, userMessage) {
-  console.log(`  → Calling Claude API (model: ${MODEL}, max_tokens: ${MAX_TOKENS})...`);
+  console.log("  -> Calling Claude (" + MODEL + ", max_tokens: " + MAX_TOKENS + ")...");
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -83,30 +109,26 @@ async function callClaude(systemPrompt, userMessage) {
 
   if (!response.ok) {
     const err = await response.text();
-    throw new Error(`Anthropic API ${response.status}: ${err}`);
+    throw new Error("Anthropic API " + response.status + ": " + err);
   }
 
   const data = await response.json();
-  console.log(`  → stop_reason: ${data.stop_reason}, tokens used: ${data.usage?.input_tokens}in / ${data.usage?.output_tokens}out`);
-
-  if (data.stop_reason === "max_tokens") {
-    console.error("  ⚠️  Response was truncated — hit max_tokens limit");
-  }
-
+  console.log("  -> stop_reason: " + data.stop_reason + ", tokens: " + data.usage?.input_tokens + "in / " + data.usage?.output_tokens + "out");
+  if (data.stop_reason === "max_tokens") console.error("  WARNING: Response truncated");
   return data.content?.[0]?.text || "";
 }
 
 // ── Context loader ────────────────────────────────────────────────────────────
 
-async function loadContext() {
+async function loadContext(repoPath) {
   const [teamMd, taskBoard, buildLog, qaReport, operatorInbox, observerInbox] =
     await Promise.all([
-      readRepoFile("CLAUDE_TEAM.md"),
-      readRepoFile("agent_sync/TASK_BOARD.json"),
-      readRepoFile("agent_sync/BUILD_LOG.md"),
-      readRepoFile("agent_sync/QA_REPORT.md"),
-      readRepoFile("agent_sync/OPERATOR_INBOX.md"),
-      readRepoFile("agent_sync/OBSERVER_INBOX.md"),
+      readRepoFile(repoPath, "CLAUDE_TEAM.md"),
+      readRepoFile(repoPath, "agent_sync/TASK_BOARD.json"),
+      readRepoFile(repoPath, "agent_sync/BUILD_LOG.md"),
+      readRepoFile(repoPath, "agent_sync/QA_REPORT.md"),
+      readRepoFile(repoPath, "agent_sync/OPERATOR_INBOX.md"),
+      readRepoFile(repoPath, "agent_sync/OBSERVER_INBOX.md"),
     ]);
   return { teamMd, taskBoard, buildLog, qaReport, operatorInbox, observerInbox };
 }
@@ -116,10 +138,9 @@ function parseJSON(raw, agentName) {
   try {
     return JSON.parse(cleaned);
   } catch (e) {
-    console.error(`❌ ${agentName} JSON parse failed: ${e.message}`);
-    console.error(`   Raw response length: ${raw.length} chars`);
-    console.error(`   First 300 chars: ${raw.slice(0, 300)}`);
-    console.error(`   Last 300 chars: ${raw.slice(-300)}`);
+    console.error(agentName + " JSON parse failed: " + e.message);
+    console.error("Length: " + raw.length + " | First 300: " + raw.slice(0, 300));
+    console.error("Last 300: " + raw.slice(-300));
     return null;
   }
 }
@@ -128,196 +149,139 @@ function parseJSON(raw, agentName) {
 
 async function runManager() {
   const ts = new Date().toISOString();
-  console.log(`\n[${ts}] 🧠 Manager starting...`);
+  console.log("\n[" + ts + "] Manager starting...");
 
-  const ctx = await loadContext();
+  await ensureRepo(REPO_MANAGER);
+  await syncToMain(REPO_MANAGER);
+  const ctx = await loadContext(REPO_MANAGER);
 
-  const system = `You are the Manager Agent for Cutting Edge Chat (https://cuttingedgechat.com).
-Strategic oversight only — you do NOT write code or run tests.
+  const system = "You are the Manager Agent for Cutting Edge Chat (https://cuttingedgechat.com).\n" +
+    "Strategic oversight only. Do NOT write code or run tests.\n\n" +
+    "HARD RULES:\n" +
+    "- Both Clerk and Authentik are permanent\n" +
+    "- T-007 must never ship before T-010\n" +
+    "- Update CLAUDE_TEAM.md Current Objectives every cycle\n" +
+    "- Keep file contents concise\n\n" +
+    "Respond with a single JSON object, no markdown fences:\n" +
+    '{"claude_team_md":"...","task_board_json":"...","operator_inbox":"...","observer_inbox":"..."}';
 
-HARD RULES:
-- Both Clerk and Authentik are permanent providers — never instruct removal of either
-- T-007 must never ship before T-010
-- CLAUDE_TEAM.md Current Objectives must reflect reality after every cycle
-- If an agent has been stuck for multiple cycles, suggest a new approach or escalate
-
-IMPORTANT: Keep your file contents concise. CLAUDE_TEAM.md and TASK_BOARD.json should be updated but not unnecessarily verbose. This ensures your response fits within token limits.
-
-Your response must be a single JSON object, no markdown fences, no explanation:
-{
-  "claude_team_md": "<updated CLAUDE_TEAM.md — keep concise>",
-  "task_board_json": "<updated TASK_BOARD.json — keep concise>",
-  "operator_inbox": "<updated OPERATOR_INBOX.md>",
-  "observer_inbox": "<updated OBSERVER_INBOX.md>"
-}`;
-
-  const user = `Timestamp: ${ts}
-
---- CLAUDE_TEAM.md ---
-${ctx.teamMd}
-
---- TASK_BOARD.json ---
-${ctx.taskBoard}
-
---- BUILD_LOG.md (last 3000 chars) ---
-${ctx.buildLog.slice(-3000)}
-
---- QA_REPORT.md (last 3000 chars) ---
-${ctx.qaReport.slice(-3000)}
-
---- OPERATOR_INBOX.md ---
-${ctx.operatorInbox}
-
---- OBSERVER_INBOX.md ---
-${ctx.observerInbox}
-
-Review all files. Identify blockers, completed tasks, idle agents, new risks.
-Update Current Objectives in CLAUDE_TEAM.md, refresh TASK_BOARD.json priorities, write to inboxes if needed.
-Keep file contents concise to avoid token limits.`;
+  const user = "Timestamp: " + ts + "\n\n" +
+    "--- CLAUDE_TEAM.md ---\n" + ctx.teamMd + "\n\n" +
+    "--- TASK_BOARD.json ---\n" + ctx.taskBoard + "\n\n" +
+    "--- BUILD_LOG.md (last 3000 chars) ---\n" + ctx.buildLog.slice(-3000) + "\n\n" +
+    "--- QA_REPORT.md (last 3000 chars) ---\n" + ctx.qaReport.slice(-3000) + "\n\n" +
+    "--- OPERATOR_INBOX.md ---\n" + ctx.operatorInbox + "\n\n" +
+    "--- OBSERVER_INBOX.md ---\n" + ctx.observerInbox + "\n\n" +
+    "Review all files. Update Current Objectives, TASK_BOARD.json, and inboxes as needed.";
 
   const raw = await callClaude(system, user);
   const parsed = parseJSON(raw, "Manager");
   if (!parsed) return;
 
-  await writeRepoFile("CLAUDE_TEAM.md", parsed.claude_team_md);
-  await writeRepoFile("agent_sync/TASK_BOARD.json", parsed.task_board_json);
-  await writeRepoFile("agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
-  await writeRepoFile("agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
-  await gitCommitPush(`ci: manager cycle ${ts}`, "AI Manager for Cutting Edge Chat", "ai-manager@users.noreply.github.com");
+  await syncToMain(REPO_MANAGER);
+  await writeRepoFile(REPO_MANAGER, "CLAUDE_TEAM.md", parsed.claude_team_md);
+  await writeRepoFile(REPO_MANAGER, "agent_sync/TASK_BOARD.json", parsed.task_board_json);
+  await writeRepoFile(REPO_MANAGER, "agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
+  await writeRepoFile(REPO_MANAGER, "agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
+  await commitAndPush(REPO_MANAGER, "ci: manager cycle " + ts, "AI Manager for Cutting Edge Chat", "ai-manager@users.noreply.github.com");
 
-  console.log(`[${ts}] ✅ Manager cycle complete`);
+  console.log("[" + ts + "] Manager complete");
 }
 
 // ── Agent: Operator ───────────────────────────────────────────────────────────
 
 async function runOperator() {
   const ts = new Date().toISOString();
-  console.log(`\n[${ts}] 🔧 Operator starting...`);
+  console.log("\n[" + ts + "] Operator starting...");
 
-  const ctx = await loadContext();
+  await ensureRepo(REPO_OPERATOR);
+  await syncToMain(REPO_OPERATOR);
+  const ctx = await loadContext(REPO_OPERATOR);
 
-  const system = `You are the Operator Agent (DevOps) for Cutting Edge Chat (https://cuttingedgechat.com).
-Repo: https://github.com/CommonEmailDotCom/SaaS-Boilerplate
-Coolify SaaS app UUID: tuk1rcjj16vlk33jrbx3c9d3
+  const system = "You are the Operator Agent (DevOps) for Cutting Edge Chat (https://cuttingedgechat.com).\n" +
+    "Coolify SaaS UUID: tuk1rcjj16vlk33jrbx3c9d3\n\n" +
+    "HARD RULES:\n" +
+    "- Clerk is permanent\n" +
+    "- No DB/Node.js imports in middleware.ts\n" +
+    "- Keep trustHost: true in next-auth\n" +
+    "- T-007 not before T-010\n" +
+    "- No deploys until T-001 PASS in QA_REPORT.md\n" +
+    "- Update BUILD_LOG.md every cycle (last 2 entries only)\n\n" +
+    "Respond with a single JSON object, no markdown fences:\n" +
+    '{"build_log":"...","operator_inbox":"...","file_changes":[{"path":"...","content":"..."}]}';
 
-HARD RULES:
-- Clerk is permanent — never remove or degrade it
-- Never import DB or Node.js modules into middleware.ts (Edge runtime only)
-- Never remove trustHost: true from next-auth config
-- T-007 must not deploy before T-010
-- No deploys until T-001 has a PASS in QA_REPORT.md (unless Manager explicitly overrides)
-- Always update BUILD_LOG.md every cycle — Manager is blind without it
-
-Your response must be a single JSON object, no markdown fences, no explanation:
-{
-  "build_log": "<updated BUILD_LOG.md — append new entry, keep last 2 entries only to save tokens>",
-  "operator_inbox": "<updated OPERATOR_INBOX.md — mark messages resolved>",
-  "file_changes": [
-    { "path": "relative/path/from/repo/root", "content": "<full file content>" }
-  ]
-}
-file_changes contains any source files you are writing or modifying. Empty array if none.`;
-
-  const user = `Timestamp: ${ts}
-
---- CLAUDE_TEAM.md ---
-${ctx.teamMd}
-
---- TASK_BOARD.json ---
-${ctx.taskBoard}
-
---- BUILD_LOG.md (last 2000 chars) ---
-${ctx.buildLog.slice(-2000)}
-
---- OPERATOR_INBOX.md ---
-${ctx.operatorInbox}
-
-Check your inbox, then execute in_progress tasks assigned to "operator" in the TASK_BOARD.
-Write code changes in file_changes. Update BUILD_LOG.md with what you did, blockers, deploy status.
-If nothing to do, say so clearly in BUILD_LOG.md with a brief entry.`;
+  const user = "Timestamp: " + ts + "\n\n" +
+    "--- CLAUDE_TEAM.md ---\n" + ctx.teamMd + "\n\n" +
+    "--- TASK_BOARD.json ---\n" + ctx.taskBoard + "\n\n" +
+    "--- BUILD_LOG.md (last 2000 chars) ---\n" + ctx.buildLog.slice(-2000) + "\n\n" +
+    "--- OPERATOR_INBOX.md ---\n" + ctx.operatorInbox + "\n\n" +
+    "Check inbox, execute in_progress operator tasks, update BUILD_LOG.md.";
 
   const raw = await callClaude(system, user);
   const parsed = parseJSON(raw, "Operator");
   if (!parsed) return;
 
-  await writeRepoFile("agent_sync/BUILD_LOG.md", parsed.build_log);
-  await writeRepoFile("agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
-
+  await syncToMain(REPO_OPERATOR);
+  await writeRepoFile(REPO_OPERATOR, "agent_sync/BUILD_LOG.md", parsed.build_log);
+  await writeRepoFile(REPO_OPERATOR, "agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
   for (const change of parsed.file_changes || []) {
-    console.log(`  📝 Writing: ${change.path}`);
-    await writeRepoFile(change.path, change.content);
+    console.log("  Writing: " + change.path);
+    await writeRepoFile(REPO_OPERATOR, change.path, change.content);
   }
+  await commitAndPush(REPO_OPERATOR, "ci: operator cycle " + ts, "AI DevOps for Cutting Edge Chat", "ai-devops@users.noreply.github.com");
 
-  await gitCommitPush(`ci: operator cycle ${ts}`, "AI DevOps for Cutting Edge Chat", "ai-devops@users.noreply.github.com");
-  console.log(`[${ts}] ✅ Operator cycle complete`);
+  console.log("[" + ts + "] Operator complete");
 }
 
 // ── Agent: Observer ───────────────────────────────────────────────────────────
 
 async function runObserver() {
   const ts = new Date().toISOString();
-  console.log(`\n[${ts}] 🔍 Observer starting...`);
+  console.log("\n[" + ts + "] Observer starting...");
 
-  const ctx = await loadContext();
+  await ensureRepo(REPO_OBSERVER);
+  await syncToMain(REPO_OBSERVER);
+  const ctx = await loadContext(REPO_OBSERVER);
 
-  const system = `You are the Observer Agent (QA) for Cutting Edge Chat (https://cuttingedgechat.com).
-Live app: https://cuttingedgechat.com
-Authentik: https://auth.joefuentes.me
-Smoke badge: https://mcp.joefuentes.me/badge/smoke
+  const system = "You are the Observer Agent (QA) for Cutting Edge Chat (https://cuttingedgechat.com).\n" +
+    "Live app: https://cuttingedgechat.com | Authentik: https://auth.joefuentes.me\n\n" +
+    "HARD RULES:\n" +
+    "- Verify /api/version SHA before testing\n" +
+    "- Wait >6s after provider switch\n" +
+    "- No T-003 without Manager instruction\n" +
+    "- Always add a new timestamped entry (last 2 entries only)\n\n" +
+    "Respond with a single JSON object, no markdown fences:\n" +
+    '{"qa_report":"...","observer_inbox":"..."}';
 
-HARD RULES:
-- Always verify /api/version SHA before testing — wrong SHA = log BLOCKED and stop
-- Wait >6s after any provider switch before asserting provider state (5s cache TTL)
-- Never run T-003 chaos test without explicit Manager instruction
-- Clerk regressions are critical — Clerk is permanent, not legacy
-- Never leave QA_REPORT.md unchanged after a cycle — always add a timestamped entry
-
-IMPORTANT: Keep your QA_REPORT.md concise — append a new entry, keep last 2 entries only.
-
-Your response must be a single JSON object, no markdown fences, no explanation:
-{
-  "qa_report": "<updated QA_REPORT.md — new entry appended, concise>",
-  "observer_inbox": "<updated OBSERVER_INBOX.md — mark messages resolved>"
-}`;
-
-  const user = `Timestamp: ${ts}
-
---- CLAUDE_TEAM.md ---
-${ctx.teamMd}
-
---- TASK_BOARD.json ---
-${ctx.taskBoard}
-
---- QA_REPORT.md (last 2000 chars) ---
-${ctx.qaReport.slice(-2000)}
-
---- OBSERVER_INBOX.md ---
-${ctx.observerInbox}
-
-Check your inbox, then execute in_progress tasks assigned to "tester" in the TASK_BOARD.
-Run headless HTTP checks against the live app. Log results. Always add a new timestamped entry.`;
+  const user = "Timestamp: " + ts + "\n\n" +
+    "--- CLAUDE_TEAM.md ---\n" + ctx.teamMd + "\n\n" +
+    "--- TASK_BOARD.json ---\n" + ctx.taskBoard + "\n\n" +
+    "--- QA_REPORT.md (last 2000 chars) ---\n" + ctx.qaReport.slice(-2000) + "\n\n" +
+    "--- OBSERVER_INBOX.md ---\n" + ctx.observerInbox + "\n\n" +
+    "Check inbox, run headless checks against live app, log results.";
 
   const raw = await callClaude(system, user);
   const parsed = parseJSON(raw, "Observer");
   if (!parsed) return;
 
-  await writeRepoFile("agent_sync/QA_REPORT.md", parsed.qa_report);
-  await writeRepoFile("agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
-  await gitCommitPush(`ci: observer cycle ${ts}`, "AI QA for Cutting Edge Chat", "ai-qa@users.noreply.github.com");
+  await syncToMain(REPO_OBSERVER);
+  await writeRepoFile(REPO_OBSERVER, "agent_sync/QA_REPORT.md", parsed.qa_report);
+  await writeRepoFile(REPO_OBSERVER, "agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
+  await commitAndPush(REPO_OBSERVER, "ci: observer cycle " + ts, "AI QA for Cutting Edge Chat", "ai-qa@users.noreply.github.com");
 
-  console.log(`[${ts}] ✅ Observer cycle complete`);
+  console.log("[" + ts + "] Observer complete");
 }
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
 cron.schedule("0,15,30,45 * * * *", () =>
-  runManager().catch((e) => console.error("❌ Manager error:", e.message))
+  runManager().catch((e) => console.error("Manager error:", e.message))
 );
 cron.schedule("5,20,35,50 * * * *", () =>
-  runOperator().catch((e) => console.error("❌ Operator error:", e.message))
+  runOperator().catch((e) => console.error("Operator error:", e.message))
 );
 cron.schedule("10,25,40,55 * * * *", () =>
-  runObserver().catch((e) => console.error("❌ Observer error:", e.message))
+  runObserver().catch((e) => console.error("Observer error:", e.message))
 );
 
-console.log("🤖 Orchestrator running — Manager :00, Operator :05, Observer :10 (every 15 min)");
+console.log("Orchestrator running — Manager :00, Operator :05, Observer :10 (every 15 min)");
