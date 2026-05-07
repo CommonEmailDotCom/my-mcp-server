@@ -71,7 +71,7 @@ async function commitAndPush(repoPath, message, authorName, authorEmail) {
     "git -C " + repoPath + " config user.name \"" + authorName + "\"",
     "git -C " + repoPath + " config user.email \"" + authorEmail + "\"",
     "git -C " + repoPath + " add -A",
-    "git -C " + repoPath + " diff --staged --quiet || git -C " + repoPath + " commit -m \"" + message + "\"",
+    "git -C " + repoPath + " diff --staged --quiet || git -C " + repoPath + " commit --author=\"" + authorName + " <" + authorEmail + ">\" -m \"" + message + "\"",
     "git -C " + repoPath + " push origin main",
   ];
   for (const cmd of cmds) {
