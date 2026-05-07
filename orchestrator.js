@@ -247,12 +247,28 @@ async function runOperator() {
     "{\"build_log\":\"...\",\"operator_inbox\":\"...\",\"file_changes\":[{\"path\":\"src/...\",\"content\":\"...\"}]}",
     "IMPORTANT: file_changes must ONLY contain paths starting with src/ or migrations/."
   ].join("\n");
+  // Fetch live data so Operator has real build/deploy state
+  let liveData = {};
+  try {
+    liveData = await fetchLiveData(GITHUB_TOKEN, GITHUB_REPO);
+    console.log("  -> live data fetched: SHA=" + liveData.liveSha + " latestQaRun=" + liveData.latestObserverQaDetail?.conclusion);
+  } catch (e) {
+    console.error("  -> fetchLiveData error:", e.message);
+  }
+
   const user = "Timestamp: " + ts + "\n\n" +
     "--- CLAUDE_TEAM.md ---\n" + ctx.teamMd + "\n\n" +
     "--- TASK_BOARD.json ---\n" + ctx.taskBoard + "\n\n" +
     "--- BUILD_LOG.md (last 2000 chars) ---\n" + ctx.buildLog.slice(-2000) + "\n\n" +
     "--- OPERATOR_INBOX.md ---\n" + ctx.operatorInbox + "\n\n" +
-    "Check inbox, execute in_progress operator tasks, update BUILD_LOG.md.";
+    "--- LIVE DATA (pre-fetched by orchestrator) ---\n" +
+    JSON.stringify(liveData, null, 2) + "\n\n" +
+    "INSTRUCTIONS: Use the LIVE DATA to inform your work this cycle.\n" +
+    "- liveSha: what is actually deployed right now — compare to expected SHA\n" +
+    "- setVersionRuns: did the last build succeed or fail?\n" +
+    "- latestObserverQaDetail: has T-001 passed? If conclusion is 'success', deploy T-007+T-010 NOW.\n" +
+    "- smokeTestRuns: is the smoke badge healthy?\n" +
+    "Check inbox, execute tasks, update BUILD_LOG.md with real data from above.";
 
   const raw = await callClaude(system, user);
   const parsed = parseJSON(raw, "Operator");
