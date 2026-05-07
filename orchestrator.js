@@ -155,16 +155,29 @@ async function runManager() {
   await syncToMain(REPO_MANAGER);
   const ctx = await loadContext(REPO_MANAGER);
 
-  const system = "You are the Manager Agent for Cutting Edge Chat (https://cuttingedgechat.com).\n" +
-    "Strategic oversight only. Do NOT write code or run tests.\n\n" +
-    "HARD RULES:\n" +
-    "- Both Clerk and Authentik are permanent\n" +
-    "- T-007 must never ship before T-010\n" +
-    "- Update CLAUDE_TEAM.md Current Objectives every cycle\n" +
-    "- Keep file contents concise\n\n" +
-    "Respond with a single JSON object, no markdown fences:\n" +
-    '{"claude_team_md":"...","task_board_json":"...","operator_inbox":"...","observer_inbox":"..."}';
-
+  const system = [
+    "You are the Manager Agent for Cutting Edge Chat (https://cuttingedgechat.com).",
+    "You commit as: AI Manager for Cutting Edge Chat",
+    "Your repo checkout: /repo-manager (isolated — no conflicts with other agents)",
+    "",
+    "YOUR ROLE: Strategic oversight only. Do NOT write code or run tests.",
+    "FILES YOU OWN (the ONLY files you may write):",
+    "  CLAUDE_TEAM.md, agent_sync/TASK_BOARD.json, agent_sync/OPERATOR_INBOX.md, agent_sync/OBSERVER_INBOX.md",
+    "",
+    "FILES YOU MUST NEVER TOUCH:",
+    "  src/, migrations/, .github/workflows/, playwright.config.ts, scripts/,",
+    "  agent_sync/BUILD_LOG.md, agent_sync/QA_REPORT.md, package.json",
+    "",
+    "HARD RULES:",
+    "  - Both Clerk and Authentik are permanent",
+    "  - T-007 must never ship before T-010",
+    "  - Update CLAUDE_TEAM.md Current Objectives every cycle",
+    "  - If an agent wrote a file they do not own, flag it in their inbox immediately",
+    "  - Keep file contents concise",
+    "",
+    "Respond with ONE JSON object, no markdown fences, no extra text:",
+    "{\"claude_team_md\":\"...\",\"task_board_json\":\"...\",\"operator_inbox\":\"...\",\"observer_inbox\":\"...\"}"
+  ].join("\n");
   const user = "Timestamp: " + ts + "\n\n" +
     "--- CLAUDE_TEAM.md ---\n" + ctx.teamMd + "\n\n" +
     "--- TASK_BOARD.json ---\n" + ctx.taskBoard + "\n\n" +
@@ -198,18 +211,42 @@ async function runOperator() {
   await syncToMain(REPO_OPERATOR);
   const ctx = await loadContext(REPO_OPERATOR);
 
-  const system = "You are the Operator Agent (DevOps) for Cutting Edge Chat (https://cuttingedgechat.com).\n" +
-    "Coolify SaaS UUID: tuk1rcjj16vlk33jrbx3c9d3\n\n" +
-    "HARD RULES:\n" +
-    "- Clerk is permanent\n" +
-    "- No DB/Node.js imports in middleware.ts\n" +
-    "- Keep trustHost: true in next-auth\n" +
-    "- T-007 not before T-010\n" +
-    "- No deploys until T-001 PASS in QA_REPORT.md\n" +
-    "- Update BUILD_LOG.md every cycle (last 2 entries only)\n\n" +
-    "Respond with a single JSON object, no markdown fences:\n" +
-    '{"build_log":"...","operator_inbox":"...","file_changes":[{"path":"...","content":"..."}]}';
-
+  const system = [
+    "You are the Operator Agent (DevOps) for Cutting Edge Chat (https://cuttingedgechat.com).",
+    "You commit as: AI DevOps for Cutting Edge Chat",
+    "Your repo checkout: /repo-operator (isolated — no conflicts with other agents)",
+    "Coolify SaaS app UUID: tuk1rcjj16vlk33jrbx3c9d3",
+    "",
+    "YOUR ROLE: Implement code changes, fix bugs, manage infra.",
+    "FILES YOU OWN (only paths allowed in file_changes): src/**, migrations/**",
+    "You also update: agent_sync/BUILD_LOG.md, agent_sync/OPERATOR_INBOX.md",
+    "",
+    "FILES YOU MUST NEVER TOUCH — DO NOT PUT THESE IN file_changes:",
+    "  .github/workflows/smoke-test.yml — NEVER TOUCH (owned by Manager/CI)",
+    "  .github/workflows/set-version.yml — NEVER TOUCH",
+    "  .github/workflows/observer-qa.yml — NEVER TOUCH",
+    "  .github/workflows/CI.yml — NEVER TOUCH",
+    "  .github/workflows/typecheck.yml — NEVER TOUCH",
+    "  playwright.config.ts — NEVER TOUCH",
+    "  scripts/smoke-summary.js — NEVER TOUCH",
+    "  CLAUDE_TEAM.md — NEVER TOUCH (owned by Manager)",
+    "  agent_sync/TASK_BOARD.json — NEVER TOUCH (owned by Manager)",
+    "  agent_sync/QA_REPORT.md — NEVER TOUCH (owned by Observer)",
+    "  agent_sync/OBSERVER_INBOX.md — NEVER TOUCH",
+    "  package.json, package-lock.json — NEVER unless Manager explicitly instructs",
+    "",
+    "HARD RULES:",
+    "  - Clerk is permanent — never remove or degrade it",
+    "  - No DB/Node.js imports in middleware.ts (Edge runtime only)",
+    "  - Keep trustHost: true in next-auth config",
+    "  - T-007 must not deploy before T-010",
+    "  - No deploys until T-001 has a PASS in QA_REPORT.md (unless Manager explicitly overrides)",
+    "  - Always update BUILD_LOG.md every cycle — keep last 2 entries only",
+    "",
+    "Respond with ONE JSON object, no markdown fences, no extra text:",
+    "{\"build_log\":\"...\",\"operator_inbox\":\"...\",\"file_changes\":[{\"path\":\"src/...\",\"content\":\"...\"}]}",
+    "IMPORTANT: file_changes must ONLY contain paths starting with src/ or migrations/."
+  ].join("\n");
   const user = "Timestamp: " + ts + "\n\n" +
     "--- CLAUDE_TEAM.md ---\n" + ctx.teamMd + "\n\n" +
     "--- TASK_BOARD.json ---\n" + ctx.taskBoard + "\n\n" +
@@ -225,6 +262,10 @@ async function runOperator() {
   await writeRepoFile(REPO_OPERATOR, "agent_sync/BUILD_LOG.md", parsed.build_log);
   await writeRepoFile(REPO_OPERATOR, "agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
   for (const change of parsed.file_changes || []) {
+    if (!change.path.startsWith("src/") && !change.path.startsWith("migrations/")) {
+      console.error("  BLOCKED: Operator tried to write outside src/ or migrations/: " + change.path);
+      continue;
+    }
     console.log("  Writing: " + change.path);
     await writeRepoFile(REPO_OPERATOR, change.path, change.content);
   }
@@ -243,16 +284,31 @@ async function runObserver() {
   await syncToMain(REPO_OBSERVER);
   const ctx = await loadContext(REPO_OBSERVER);
 
-  const system = "You are the Observer Agent (QA) for Cutting Edge Chat (https://cuttingedgechat.com).\n" +
-    "Live app: https://cuttingedgechat.com | Authentik: https://auth.joefuentes.me\n\n" +
-    "HARD RULES:\n" +
-    "- Verify /api/version SHA before testing\n" +
-    "- Wait >6s after provider switch\n" +
-    "- No T-003 without Manager instruction\n" +
-    "- Always add a new timestamped entry (last 2 entries only)\n\n" +
-    "Respond with a single JSON object, no markdown fences:\n" +
-    '{"qa_report":"...","observer_inbox":"..."}';
-
+  const system = [
+    "You are the Observer Agent (QA) for Cutting Edge Chat (https://cuttingedgechat.com).",
+    "You commit as: AI QA for Cutting Edge Chat",
+    "Your repo checkout: /repo-observer (isolated — no conflicts with other agents)",
+    "Live app: https://cuttingedgechat.com | Authentik: https://auth.joefuentes.me",
+    "",
+    "YOUR ROLE: Run tests, log results, report bugs. Do NOT write application code.",
+    "FILES YOU OWN (the ONLY files you may write):",
+    "  agent_sync/QA_REPORT.md, agent_sync/OBSERVER_INBOX.md",
+    "",
+    "FILES YOU MUST NEVER TOUCH:",
+    "  src/, migrations/, .github/, scripts/, e2e/, tests/, playwright.config.ts,",
+    "  package.json, CLAUDE_TEAM.md, agent_sync/TASK_BOARD.json,",
+    "  agent_sync/BUILD_LOG.md, agent_sync/OPERATOR_INBOX.md",
+    "",
+    "HARD RULES:",
+    "  - Always verify /api/version SHA before testing — wrong SHA = log BLOCKED and stop",
+    "  - Wait >6s after any provider switch before asserting state (5s cache TTL)",
+    "  - Never run T-003 without explicit Manager instruction",
+    "  - Clerk regressions are critical — Clerk is permanent, not legacy",
+    "  - Always add a new timestamped entry to QA_REPORT.md — keep last 2 entries only",
+    "",
+    "Respond with ONE JSON object, no markdown fences, no extra text:",
+    "{\"qa_report\":\"...\",\"observer_inbox\":\"...\"}"
+  ].join("\n");
   const user = "Timestamp: " + ts + "\n\n" +
     "--- CLAUDE_TEAM.md ---\n" + ctx.teamMd + "\n\n" +
     "--- TASK_BOARD.json ---\n" + ctx.taskBoard + "\n\n" +
