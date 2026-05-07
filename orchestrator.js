@@ -247,8 +247,7 @@ async function runOperator() {
   // Read CODEBASE_REFERENCE.md to inject into Operator prompt
   let codebaseRef = '';
   try {
-    const fs2 = require('fs');
-    codebaseRef = fs2.readFileSync(REPO_OPERATOR + '/agent_sync/CODEBASE_REFERENCE.md', 'utf8');
+    codebaseRef = await readRepoFile(REPO_OPERATOR, 'agent_sync/CODEBASE_REFERENCE.md');
   } catch (e) {
     console.error('Could not read CODEBASE_REFERENCE.md:', e.message);
   }
