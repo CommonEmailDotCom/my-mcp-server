@@ -261,7 +261,7 @@ async function runManager() {
     "--- OBSERVER_INBOX.md ---\n" + ctx.observerInbox + "\n\n" +
     "Review all files. Update Current Objectives, TASK_BOARD.json, and inboxes as needed.";
 
-  const raw = await callClaude(system, user);
+  const raw = await callClaude(system, user, true);  // MCP tools enabled — Manager can verify infra claims
   const parsed = parseJSON(raw, "Manager");
   if (!parsed) return;
 
