@@ -242,6 +242,8 @@ async function runOperator() {
     "  - T-007 must not deploy before T-010",
     "  - No deploys until T-001 has a PASS in QA_REPORT.md (unless Manager explicitly overrides)",
     "  - Always update BUILD_LOG.md every cycle — keep last 2 entries only",
+    "  - NEVER communicate via commit messages — use OPERATOR_INBOX.md replies only",
+    "  - Commit messages: ci: operator cycle [timestamp] when idle, real description when making code changes",
     "",
     "Respond with ONE JSON object, no markdown fences, no extra text:",
     "{\"build_log\":\"...\",\"operator_inbox\":\"...\",\"file_changes\":[]}",
@@ -396,6 +398,8 @@ async function runObserver() {
     "  - Never run T-003 without explicit Manager instruction",
     "  - Clerk regressions are critical — Clerk is permanent, not legacy",
     "  - Always add a new timestamped entry to QA_REPORT.md — keep last 2 entries only",
+    "  - NEVER communicate via commit messages — use OBSERVER_INBOX.md replies only",
+    "  - Commit messages must be exactly: ci: observer cycle [timestamp]",
     "",
     "Respond with ONE JSON object, no markdown fences, no extra text:",
     "{\"qa_report\":\"...\",\"observer_inbox\":\"...\"}"
