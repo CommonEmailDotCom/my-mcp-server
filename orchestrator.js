@@ -183,7 +183,7 @@ Keep file contents concise to avoid token limits.`;
   await writeRepoFile("agent_sync/TASK_BOARD.json", parsed.task_board_json);
   await writeRepoFile("agent_sync/OPERATOR_INBOX.md", parsed.operator_inbox);
   await writeRepoFile("agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
-  await gitCommitPush(`ci: manager cycle ${ts}`, "AI Manager for Cutting Edge Chat", "ai-manager@cuttingedgechat.com");
+  await gitCommitPush(`ci: manager cycle ${ts}`, "AI Manager for Cutting Edge Chat", "ai-manager@users.noreply.github.com");
 
   console.log(`[${ts}] ✅ Manager cycle complete`);
 }
@@ -248,7 +248,7 @@ If nothing to do, say so clearly in BUILD_LOG.md with a brief entry.`;
     await writeRepoFile(change.path, change.content);
   }
 
-  await gitCommitPush(`ci: operator cycle ${ts}`, "AI DevOps for Cutting Edge Chat", "ai-devops@cuttingedgechat.com");
+  await gitCommitPush(`ci: operator cycle ${ts}`, "AI DevOps for Cutting Edge Chat", "ai-devops@users.noreply.github.com");
   console.log(`[${ts}] ✅ Operator cycle complete`);
 }
 
@@ -303,7 +303,7 @@ Run headless HTTP checks against the live app. Log results. Always add a new tim
 
   await writeRepoFile("agent_sync/QA_REPORT.md", parsed.qa_report);
   await writeRepoFile("agent_sync/OBSERVER_INBOX.md", parsed.observer_inbox);
-  await gitCommitPush(`ci: observer cycle ${ts}`, "AI QA for Cutting Edge Chat", "ai-qa@cuttingedgechat.com");
+  await gitCommitPush(`ci: observer cycle ${ts}`, "AI QA for Cutting Edge Chat", "ai-qa@users.noreply.github.com");
 
   console.log(`[${ts}] ✅ Observer cycle complete`);
 }
