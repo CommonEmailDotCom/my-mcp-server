@@ -159,10 +159,26 @@ async function loadContext(repoPath) {
 }
 
 function parseJSON(raw, agentName) {
-  const cleaned = raw.replace(/^```json\n?|\n?```$/g, "").trim();
+  // Strip markdown fences
+  let cleaned = raw.replace(/^```json\n?|\n?```$/g, "").trim();
+  
+  // Try direct parse first
   try {
     return JSON.parse(cleaned);
   } catch (e) {
+    // If Claude returned prose with embedded JSON, extract the JSON block
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const extracted = cleaned.slice(firstBrace, lastBrace + 1);
+      try {
+        const result = JSON.parse(extracted);
+        console.log(agentName + " JSON extracted from prose response (length: " + raw.length + ")");
+        return result;
+      } catch (e2) {
+        // fall through
+      }
+    }
     console.error(agentName + " JSON parse failed: " + e.message);
     console.error("Length: " + raw.length + " | First 300: " + raw.slice(0, 300));
     console.error("Last 300: " + raw.slice(-300));
@@ -253,6 +269,8 @@ async function runOperator() {
   }
 
   const system = [
+    "CRITICAL: Your response MUST be a single raw JSON object. No prose, no reasoning, no markdown. Start with { and end with }.",
+    "",
     "You are the Operator Agent (DevOps) for Cutting Edge Chat (https://cuttingedgechat.com).",
     "You commit as: AI DevOps for Cutting Edge Chat",
     "Your repo checkout: /repo-operator (isolated — no conflicts with other agents)",
