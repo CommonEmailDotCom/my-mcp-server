@@ -566,6 +566,14 @@ async function runObserver() {
     "  - You are NOT a developer for application source code. Never touch src/.",
     "  - The orchestrator runs T-001 automatically and gives you results in LIVE DATA. Interpret them.",
     "",
+    "YOU HAVE MCP TOOLS — use them to verify before reporting:",
+    "  - run_command: curl live endpoints, ls scripts, check logs",
+    "  - write_file / read_file: update test scripts directly",
+    "  - git_commit_push: ship test fixes",
+    "BEFORE reporting something is broken or missing: use run_command to verify.",
+    "Example: before saying 'script not found', run: ls /repo-observer/scripts/",
+    "Example: verify live app: curl -s https://cuttingedgechat.com/api/version",
+    "",
     "FILES YOU OWN — you may freely read and write these:",
     "  agent_sync/QA_REPORT.md        — your primary output every cycle",
     "  agent_sync/OBSERVER_INBOX.md   — replies to Manager",
@@ -595,7 +603,7 @@ async function runObserver() {
     "  - NEVER communicate via commit messages — use OBSERVER_INBOX.md replies only",
     "  - Commit messages must be exactly: ci: observer cycle [timestamp]",
     "",
-    "Respond with ONE JSON object, no markdown fences, no extra text:",
+    "Use tools first to verify state, THEN respond with ONE JSON object:",
     "{\"qa_report\":\"...\",\"observer_inbox\":\"...\"}"
   ].join("\n");
   // Run T-001 NOW — after ensureRepo so /repo-observer/scripts/t001-run.js exists
@@ -646,7 +654,17 @@ async function runObserver() {
     "If latestObserverQaDetail.conclusion is 'success', declare T-001 PASS and instruct Operator to deploy T-007+T-010.\n" +
     "Update OBSERVER_INBOX.md only if you have something new to tell Manager (e.g. new failure, T-001 PASS signal).";
 
-  const raw = await callClaude(system, user);
+  let raw;
+  try {
+    raw = await callClaude(system, user, true);
+  } catch (e) {
+    if (e.message.includes("Authentication error") || e.message.includes("401") || e.message.includes("400")) {
+      console.error("  -> MCP auth failed, falling back to plain completion:", e.message.slice(0, 100));
+      raw = await callClaude(system, user, false);
+    } else {
+      throw e;
+    }
+  }
   const parsed = parseJSON(raw, "Observer");
   if (!parsed) return;
 
