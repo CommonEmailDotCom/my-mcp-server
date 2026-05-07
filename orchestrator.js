@@ -458,6 +458,26 @@ async function fetchLiveData(ghToken, repo) {
     }
   } catch (e) { results.autoDispatch = "ERROR: " + e.message; }
 
+
+  // Run T-001 test script directly on MCP server
+  try {
+    const t001Script = REPO_OBSERVER + "/scripts/t001-run.js";
+    let scriptExists = false;
+    try { fs.accessSync ? fs.accessSync(t001Script) : await fsPromises.access(t001Script); scriptExists = true; } catch {}
+    if (scriptExists) {
+      const { stdout, stderr } = await execAsync("node " + t001Script, {
+        timeout: 120000,
+        env: { ...process.env }
+      });
+      results.t001Result = stdout.slice(-3000);
+      if (stderr) results.t001Stderr = stderr.slice(-500);
+    } else {
+      results.t001Result = "script not found at " + t001Script;
+    }
+  } catch (e) {
+    results.t001Result = "ERROR running t001 script: " + e.message;
+  }
+
   return results;
 }
 
@@ -477,7 +497,7 @@ async function runObserver() {
     "Your repo checkout: /repo-observer (isolated — no conflicts with other agents)",
     "Live app: https://cuttingedgechat.com | Authentik: https://auth.joefuentes.me",
     "",
-    "YOUR ROLE: Run tests, log results, report bugs. Do NOT write application code.",
+    "YOUR ROLE: Analyze test results, log findings, report bugs. The orchestrator runs the T-001 test script automatically each cycle and provides results in LIVE DATA. You interpret those results and write a clear QA_REPORT entry.",
     "FILES YOU OWN (the ONLY files you may write):",
     "  agent_sync/QA_REPORT.md, agent_sync/OBSERVER_INBOX.md",
     "",
@@ -516,6 +536,7 @@ async function runObserver() {
     JSON.stringify(liveData, null, 2) + "\n\n" +
     "INSTRUCTIONS: The LIVE DATA above is real current state fetched this cycle. Use it to write an accurate report.\n" +
     "- liveSha: what is actually live on cuttingedgechat.com right now\n" +
+    "- t001Result: OUTPUT OF THE T-001 TEST SCRIPT run this cycle — interpret this and write your QA_REPORT entry from it\n" +
     "- latestObserverQaDetail: full step-by-step result of the most recent observer-qa.yml run\n" +
     "- smokeTestRuns: recent smoke test results\n" +
     "- setVersionRuns: recent build deployments\n" +
