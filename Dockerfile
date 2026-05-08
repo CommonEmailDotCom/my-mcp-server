@@ -1,6 +1,15 @@
 FROM node:20-alpine
 
-RUN apk add --no-cache git openssh-client
+# System deps for git, ssh, and Playwright/Chromium
+RUN apk add --no-cache \
+  git openssh-client \
+  chromium nss freetype harfbuzz ca-certificates ttf-freefont \
+  # Chromium runtime deps
+  udev xvfb
+
+# Tell Playwright to use system Chromium instead of downloading its own
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 WORKDIR /mcp
 
