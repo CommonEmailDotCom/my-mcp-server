@@ -409,7 +409,7 @@ const httpServer = createServer(async (req, res) => {
   const PUBLIC_PATHS = [
     '/.well-known/oauth-authorization-server',
     '/badge/smoke', '/smoke-status', '/smoke-latest', '/badge/coolify',
-    '/health', '/healthz', '/status', '/save-tokens',
+    '/health', '/healthz', '/status', '/deploy-status', '/save-tokens',
   ];
   if (!PUBLIC_PATHS.includes(url.pathname)) {
     const auth = req.headers["authorization"] || "";
@@ -508,6 +508,27 @@ const httpServer = createServer(async (req, res) => {
     } catch (err) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // /deploy-status — check if a Coolify deployment is in progress
+  // Used by set-version.yml to avoid concurrent deploys colliding on Docker container names
+  if (url.pathname === '/deploy-status' && req.method === 'GET') {
+    try {
+      const appUuid = url.searchParams.get('uuid') || 'tuk1rcjj16vlk33jrbx3c9d3';
+      const data = await coolifyFetch('/deployments/applications/' + appUuid + '?take=1');
+      const latest = data.deployments?.[0];
+      const inProgress = latest && ['in_progress', 'queued'].includes(latest.status);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: inProgress ? 'in_progress' : 'idle',
+        latest_status: latest?.status || 'none',
+        deployment_uuid: latest?.deployment_uuid || null,
+      }));
+    } catch (err) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'unknown', error: err.message }));
     }
     return;
   }
