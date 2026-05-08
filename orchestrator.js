@@ -2,7 +2,7 @@
 
 /**
  * Agent Orchestrator
- * Round-robin: Manager :00/:15/:30/:45 -> Operator :05/:20/:35/:50 -> Observer :10/:25/:40/:55
+ * Round-robin: Manager :00 -> Operator :20 -> Observer :40 (every 60 min, 20 min gaps)
  *
  * Each agent has its own repo checkout. Git discipline per agent:
  * fetch + reset --hard to origin/main, write changes, single commit, push.
@@ -825,14 +825,14 @@ async function runObserver() {
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
-cron.schedule("0,15,30,45 * * * *", () =>
+cron.schedule("0 * * * *", () =>
   runManager().catch((e) => console.error("Manager error:", e.message))
 );
-cron.schedule("5,20,35,50 * * * *", () =>
+cron.schedule("20 * * * *", () =>
   runOperator().catch((e) => console.error("Operator error:", e.message))
 );
-cron.schedule("10,25,40,55 * * * *", () =>
+cron.schedule("40 * * * *", () =>
   runObserver().catch((e) => console.error("Observer error:", e.message))
 );
 
-console.log("Orchestrator running — Manager :00, Operator :05, Observer :10 (every 15 min)");
+console.log("Orchestrator running — Manager :00, Operator :20, Observer :40 (every 60 min)");
