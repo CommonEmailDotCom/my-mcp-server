@@ -43,6 +43,31 @@ async function ensureRepo(repoPath) {
       { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }
     );
   }
+  // Install node_modules if missing or package.json has changed
+  // This makes Playwright + all SaaS deps available in the volume-mounted repo
+  const nmPath = path.join(repoPath, "node_modules");
+  const pkgPath = path.join(repoPath, "package.json");
+  const stampPath = path.join(repoPath, "node_modules", ".install_stamp");
+  try {
+    const pkgMtime = (await fs.stat(pkgPath)).mtimeMs;
+    const stampMtime = (await fs.stat(stampPath)).mtimeMs;
+    if (stampMtime >= pkgMtime) return; // node_modules is fresh
+  } catch {
+    // stamp missing or node_modules doesn't exist — install needed
+  }
+  console.log("  -> Installing node_modules in " + repoPath + " (this may take a minute)...");
+  await execAsync("npm ci --prefer-offline", { cwd: repoPath, env: { ...process.env, NODE_ENV: "development" } })
+    .catch(e => execAsync("npm ci", { cwd: repoPath, env: { ...process.env, NODE_ENV: "development" } }));
+  // Write stamp file so we don't reinstall next cycle
+  await fs.writeFile(stampPath, new Date().toISOString(), "utf8");
+  console.log("  -> node_modules installed in " + repoPath);
+  // Install Playwright browsers for the observer repo
+  if (repoPath.includes('observer')) {
+    console.log("  -> Installing Playwright browsers for " + repoPath + "...");
+    await execAsync("npx playwright install chromium", { cwd: repoPath })
+      .catch(e => console.log("  -> Playwright install warning: " + e.message.slice(0,100)));
+    console.log("  -> Playwright browsers ready");
+  }
 }
 
 async function syncToMain(repoPath) {
