@@ -196,6 +196,16 @@ async function callClaude(systemPrompt, userMessage, useMcpTools = false) {
 
 // ── Context loader ────────────────────────────────────────────────────────────
 
+async function readFileSafe(repoPath, relPath, maxChars = 6000) {
+  try {
+    const content = await fs.readFile(path.join(repoPath, relPath), "utf8");
+    if (content.length > maxChars) {
+      return content.slice(0, maxChars) + `\n[...truncated at ${maxChars} chars, ${content.length} total. Agent can read_file with start_line/end_line for more.]`;
+    }
+    return content;
+  } catch { return "(not found)"; }
+}
+
 async function loadContext(repoPath) {
   const [teamMd, taskBoard, buildLog, qaReport, operatorInbox, observerInbox] =
     await Promise.all([
@@ -207,6 +217,17 @@ async function loadContext(repoPath) {
       readRepoFile(repoPath, "agent_sync/OBSERVER_INBOX.md"),
     ]);
   return { teamMd, taskBoard, buildLog, qaReport, operatorInbox, observerInbox };
+}
+
+// Pre-fetch specific src/ files from the filesystem (free — no MCP tool call needed)
+// Used by Operator to get current state of fragile files before modifying them
+async function loadSrcContext(repoPath) {
+  const [authProvider, middleware, authNextauth] = await Promise.all([
+    readFileSafe(repoPath, "src/libs/auth-provider/index.ts"),
+    readFileSafe(repoPath, "src/middleware.ts"),
+    readFileSafe(repoPath, "src/libs/auth-nextauth.ts"),
+  ]);
+  return { authProvider, middleware, authNextauth };
 }
 
 function parseJSON(raw, agentName) {
@@ -428,15 +449,20 @@ async function runOperator() {
     "  - coolify_trigger_deploy(app_uuid): trigger a Coolify deployment",
     "  - query_postgres(sql, params?): run a SQL query",
     "",
-    "  - read_file(path, start_line?, end_line?): read a file with optional line range",
+    "  - read_file(path, start_line?, end_line?): read a file — supports pagination",
     "",
-    "READING LARGE FILES — always paginate, never cat:",
-    "  read_file returns total_lines. If file is large, read in chunks:",
-    "    1. read_file(path) → see [File: x | N lines] header",
-    "    2. read_file(path, start_line=1, end_line=80) → first 80 lines",
-    "    3. read_file(path, start_line=81, end_line=160) → next chunk",
-    "  Do NOT use run_command with cat on large files — same 5000 char cap applies.",
-    "  Use read_file with start_line/end_line instead — it gives you controlled chunks.",
+    "PRE-FETCHED FILES — already in your context, no tool call needed:",
+    "  src/libs/auth-provider/index.ts  → under '--- SRC CONTEXT ---' in this message",
+    "  src/middleware.ts                → under '--- SRC CONTEXT ---' in this message",
+    "  src/libs/auth-nextauth.ts        → under '--- SRC CONTEXT ---' in this message",
+    "  All agent_sync/ files            → already injected above",
+    "  DO NOT call read_file for these — you already have them.",
+    "",
+    "FOR OTHER FILES — use read_file with pagination:",
+    "  read_file(path) → shows [File: x | N lines] header",
+    "  read_file(path, start_line=1, end_line=80) → first 80 lines",
+    "  read_file(path, start_line=81, end_line=160) → next chunk",
+    "  Never use run_command with cat — same 5000 char cap, less control.",
     "",
     "TOOLS NOT IN SCOPE:",
     "  - list_directory: use run_command with ls",
@@ -468,11 +494,18 @@ async function runOperator() {
     console.error("  -> fetchLiveData error:", e.message);
   }
 
+  // Pre-fetch fragile src/ files from filesystem — free, no MCP tool needed
+  const srcCtx = await loadSrcContext(REPO_OPERATOR);
+
   const user = "Timestamp: " + ts + "\n\n" +
     "--- CLAUDE_TEAM.md ---\n" + ctx.teamMd + "\n\n" +
     "--- TASK_BOARD.json ---\n" + ctx.taskBoard + "\n\n" +
     "--- BUILD_LOG.md (last 2000 chars) ---\n" + ctx.buildLog.slice(-2000) + "\n\n" +
     "--- OPERATOR_INBOX.md ---\n" + ctx.operatorInbox + "\n\n" +
+    "--- SRC CONTEXT (current file state — read from filesystem, no tool call needed) ---\n" +
+    "src/libs/auth-provider/index.ts:\n" + srcCtx.authProvider + "\n\n" +
+    "src/middleware.ts:\n" + srcCtx.middleware + "\n\n" +
+    "src/libs/auth-nextauth.ts:\n" + srcCtx.authNextauth + "\n\n" +
     "--- LIVE DATA (pre-fetched by orchestrator) ---\n" +
     JSON.stringify(liveData, null, 2) + "\n\n" +
     "INSTRUCTIONS: Use the LIVE DATA to inform your work this cycle.\n" +
