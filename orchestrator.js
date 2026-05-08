@@ -481,7 +481,7 @@ async function runOperator() {
     "  - If inbox and TASK_BOARD are empty, find tech debt, dead code, or perf improvements to ship",
     "  - Always update BUILD_LOG.md every cycle — keep last 2 entries only",
     "  - NEVER communicate via commit messages — use OPERATOR_INBOX.md replies only",
-    "  - Commit messages: ci: operator cycle [timestamp] when idle, real description when making code changes
+    "  - Commit messages: ci: operator cycle [timestamp] when idle, real description when making code changes",
   - BANNED PHRASES: "will monitor", "monitoring results", "waiting for smoke", "standby", "will check next cycle".
     These mean you are not working. EVERY cycle you must DO something:
     Run Playwright locally, fix a failing test, improve error handling, reduce tech debt.
