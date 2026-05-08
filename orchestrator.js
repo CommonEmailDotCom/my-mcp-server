@@ -136,7 +136,21 @@ async function callClaude(systemPrompt, userMessage, useMcpTools = false) {
         authorization_token: process.env.BEARER_TOKEN || ""
       }
     ];
-    body.tools = [{ type: "mcp_toolset", mcp_server_name: "mcp-server" }];
+    // Restrict to write/action tools only — reads are pre-fetched by orchestrator
+    // This prevents multi-turn read loops that accumulate conversation history
+    body.tools = [{
+      type: "mcp_toolset",
+      mcp_server_name: "mcp-server",
+      tool_configuration: {
+        enabled: true,
+        allowed_tools: [
+          "write_file", "delete_file",
+          "run_command", "git_commit_push", "git_pull",
+          "coolify_trigger_deploy", "coolify_trigger_deploy",
+          "query_postgres"
+        ]
+      }
+    }];
     body.tool_choice = { type: "auto" };
   }
 
@@ -239,11 +253,11 @@ async function runManager() {
     "",
     "YOUR ROLE: Strategic oversight. Coordinate agents, verify state, unblock work.",
     "",
-    "YOU HAVE MCP TOOLS. Use them to VERIFY before making claims:",
-    "  - run_command: check filesystem, run curl, verify scripts exist, check logs",
-    "  - read_file: read any file in the repo",
+    "YOU HAVE MCP TOOLS for verification and action:",
+    "  - run_command: check filesystem, run curl, verify scripts exist — output capped at 5000 chars",
     "  - query_postgres: check DB state",
     "  - coolify_trigger_deploy: trigger deploys if needed",
+    "NOTE: read_file is NOT in your tool scope. Context files are pre-fetched and injected.",
     "BEFORE claiming something is broken or blocked: USE RUN_COMMAND TO CHECK.",
     "Example: before saying 'scripts/t001-run.js is missing', run: ls /repo-observer/scripts/",
     "Example: before saying 'app is down', run: curl -s -o /dev/null -w '%{http_code}' https://cuttingedgechat.com",
@@ -390,14 +404,17 @@ async function runOperator() {
     "  - NEVER communicate via commit messages — use OPERATOR_INBOX.md replies only",
     "  - Commit messages: ci: operator cycle [timestamp] when idle, real description when making code changes",
     "",
-    "You have MCP tools available. Use them directly to do your work:",
-    "  - run_command: run shell commands (git, node, etc.)",
+    "You have MCP tools available for WRITE and ACTION operations:",
     "  - write_file: write files to the repo",
-    "  - read_file: read files from the repo",
+    "  - delete_file: delete a file",
+    "  - run_command: run shell commands (git, node, etc.) — output capped at 5000 chars",
     "  - git_commit_push: stage all changes, commit and push",
     "  - git_pull: pull latest from main",
     "  - coolify_trigger_deploy: trigger a Coolify deployment",
     "  - query_postgres: run DB queries",
+    "NOTE: read_file and list_directory are NOT in your tool scope — the orchestrator",
+    "pre-fetches file contents and injects them as text in your context. Use that text.",
+    "Do NOT try to call read_file or list_directory — they will fail.",
     "",
     "MCP SERVER HEALTH (check when tools seem broken):",
     "  wget -qO- https://mcp.joefuentes.me/status   → version, uptime, active_connections, postgres",
@@ -589,10 +606,12 @@ async function runObserver() {
     "  - You are NOT a developer for application source code. Never touch src/.",
     "  - The orchestrator runs T-001 automatically and gives you results in LIVE DATA. Interpret them.",
     "",
-    "YOU HAVE MCP TOOLS — use them to verify before reporting:",
-    "  - run_command: curl live endpoints, ls scripts, check logs",
-    "  - write_file / read_file: update test scripts directly",
+    "YOU HAVE MCP TOOLS for WRITE and ACTION operations:",
+    "  - run_command: run scripts, curl endpoints, ls directories — output capped at 5000 chars",
+    "  - write_file: update test scripts",
     "  - git_commit_push: ship test fixes",
+    "NOTE: read_file is NOT in your tool scope. The orchestrator pre-fetches context.",
+    "Use run_command with 'cat' or 'head' if you need to inspect a file.",
     "BEFORE reporting something is broken or missing: use run_command to verify.",
     "Example: before saying 'script not found', run: ls /repo-observer/scripts/",
     "Example: verify live app: curl -s https://cuttingedgechat.com/api/version",
