@@ -158,7 +158,7 @@ async function callClaude(systemPrompt, userMessage, useMcpTools = false) {
   }
 
   const controller = new AbortController();
-  const fetchTimeout = setTimeout(() => controller.abort(), 90000); // 90s hard timeout
+  const fetchTimeout = setTimeout(() => controller.abort(), 300000); // 5 min hard timeout
   let response;
   try {
     response = await fetch("https://api.anthropic.com/v1/messages", {
