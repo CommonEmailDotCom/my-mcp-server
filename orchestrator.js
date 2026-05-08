@@ -381,8 +381,16 @@ async function runManager() {
   try {
     raw = await callClaude(system, user, true);
   } catch (e) {
-    if (e.message.includes("Authentication error") || e.message.includes("401") || e.message.includes("400")) {
-      console.error("  -> MCP auth failed, falling back to plain completion:", e.message.slice(0, 100));
+    const isRetryable = e.message.includes("Authentication error") 
+      || e.message.includes("401") 
+      || e.message.includes("400")
+      || e.message.includes("aborted")
+      || e.message.includes("502")
+      || e.message.includes("503")
+      || e.message.includes("ECONNRESET")
+      || e.message.includes("fetch failed");
+    if (isRetryable) {
+      console.error("  -> MCP call failed, falling back to plain completion:", e.message.slice(0, 100));
       raw = await callClaude(system, user, false);
     } else {
       throw e;
@@ -555,8 +563,16 @@ async function runOperator() {
   try {
     raw = await callClaude(system, user, true);
   } catch (e) {
-    if (e.message.includes("Authentication error") || e.message.includes("401") || e.message.includes("400")) {
-      console.error("  -> MCP auth failed, falling back to plain completion:", e.message.slice(0, 100));
+    const isRetryable = e.message.includes("Authentication error") 
+      || e.message.includes("401") 
+      || e.message.includes("400")
+      || e.message.includes("aborted")
+      || e.message.includes("502")
+      || e.message.includes("503")
+      || e.message.includes("ECONNRESET")
+      || e.message.includes("fetch failed");
+    if (isRetryable) {
+      console.error("  -> MCP call failed, falling back to plain completion:", e.message.slice(0, 100));
       raw = await callClaude(system, user, false);
     } else {
       throw e;
@@ -820,8 +836,16 @@ async function runObserver() {
   try {
     raw = await callClaude(system, user, true);
   } catch (e) {
-    if (e.message.includes("Authentication error") || e.message.includes("401") || e.message.includes("400")) {
-      console.error("  -> MCP auth failed, falling back to plain completion:", e.message.slice(0, 100));
+    const isRetryable = e.message.includes("Authentication error") 
+      || e.message.includes("401") 
+      || e.message.includes("400")
+      || e.message.includes("aborted")
+      || e.message.includes("502")
+      || e.message.includes("503")
+      || e.message.includes("ECONNRESET")
+      || e.message.includes("fetch failed");
+    if (isRetryable) {
+      console.error("  -> MCP call failed, falling back to plain completion:", e.message.slice(0, 100));
       raw = await callClaude(system, user, false);
     } else {
       throw e;
