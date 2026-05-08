@@ -330,10 +330,7 @@ async function runOperator() {
   // Read CODEBASE_REFERENCE.md to inject into Operator prompt
   let codebaseRef = '';
   try {
-    const fullRef = await readRepoFile(REPO_OPERATOR, 'agent_sync/CODEBASE_REFERENCE.md');
-    // Only inject the first 2000 chars — the critical warnings are at the top
-    codebaseRef = fullRef.slice(0, 2000);
-    if (fullRef.length > 2000) codebaseRef += "\n[...truncated for token efficiency — full file at agent_sync/CODEBASE_REFERENCE.md...]";
+    codebaseRef = await readRepoFile(REPO_OPERATOR, 'agent_sync/CODEBASE_REFERENCE.md');
   } catch (e) {
     console.error('Could not read CODEBASE_REFERENCE.md:', e.message);
   }
