@@ -24,6 +24,7 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const BASE_URL = process.env.BASE_URL || "https://mcp.joefuentes.me";
 const COOLIFY_URL = process.env.COOLIFY_URL || "http://coolify:8000";
 const COOLIFY_API_TOKEN = process.env.COOLIFY_API_TOKEN;
+const SERVER_START = Date.now();
 
 if (!BEARER_TOKEN) {
   console.error("ERROR: BEARER_TOKEN env var is required");
@@ -32,18 +33,30 @@ if (!BEARER_TOKEN) {
 
 const execAsync = promisify(exec);
 
+// ── FIX 3: Catch all unhandled errors so the process exits cleanly ────────────
+// Docker/Coolify restarts automatically. Better than a zombie process.
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] uncaughtException:", err.message, err.stack);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL] unhandledRejection:", reason);
+  process.exit(1);
+});
+
+// ── Active connection tracking ────────────────────────────────────────────────
+let activeConnections = 0;
+
 // ── In-memory stores ──────────────────────────────────────────────────────────
 const authCodes = new Map();
-// Persist tokens to file so they survive restarts — no reconnect needed
 const TOKENS_FILE = '/data/mcp-tokens.json';
 function loadTokens() {
-  try {
-    const data = JSON.parse(readFileSync(TOKENS_FILE, 'utf8'));
-    return new Set(data);
-  } catch { return new Set(); }
+  try { return new Set(JSON.parse(readFileSync(TOKENS_FILE, 'utf8'))); }
+  catch { return new Set(); }
 }
 function saveTokens(set) {
-  try { writeFileSync(TOKENS_FILE, JSON.stringify([...set])); } catch(e) { console.error("saveTokens failed:", e.message); }
+  try { writeFileSync(TOKENS_FILE, JSON.stringify([...set])); }
+  catch(e) { console.error("saveTokens failed:", e.message); }
 }
 const tokens = loadTokens();
 
@@ -60,11 +73,7 @@ async function coolifyFetch(endpoint, options = {}) {
     },
   });
   const text = await res.text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
+  try { return JSON.parse(text); } catch { return text; }
 }
 
 // ── Clone repo on startup ─────────────────────────────────────────────────────
@@ -76,22 +85,15 @@ async function ensureRepo() {
   try {
     await fs.access(path.join(REPO_PATH, ".git"));
     console.log("✅ Repo already cloned, pulling latest...");
-    await execAsync(`git -C ${REPO_PATH} pull`, {
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    });
+    await execAsync(`git -C ${REPO_PATH} pull`, { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
   } catch {
     console.log("📦 Cloning repo...");
     await fs.mkdir(REPO_PATH, { recursive: true });
     const url = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
-    await execAsync(`git clone ${url} ${REPO_PATH}`, {
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    });
-    await execAsync(
-      `git -C ${REPO_PATH} remote set-url origin https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`
-    );
+    await execAsync(`git clone ${url} ${REPO_PATH}`, { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    await execAsync(`git -C ${REPO_PATH} remote set-url origin https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`);
     console.log("✅ Repo cloned successfully");
   }
-  // Set git identity
   const gitName = process.env.GIT_AUTHOR_NAME || "CommonEmailDotCom";
   const gitEmail = process.env.GIT_AUTHOR_EMAIL || "github@commonemail.com";
   try {
@@ -100,15 +102,28 @@ async function ensureRepo() {
   } catch {}
 }
 
-// ── Postgres ──────────────────────────────────────────────────────────────────
-let pgClient = null;
+// ── FIX 2: pg.Pool instead of pg.Client ──────────────────────────────────────
+// pg.Client is a single persistent connection with no reconnect logic.
+// When the connection drops, pgClient still exists so !pgClient is false —
+// getDb() returns the broken object and every query throws, poisoning the
+// transport layer and causing all tools to fail.
+// pg.Pool handles reconnection, idle timeouts, and connection limits automatically.
+const pgPool = PG_CONNECTION_STRING ? new pg.Pool({
+  connectionString: PG_CONNECTION_STRING,
+  max: 3,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+}) : null;
+
+if (pgPool) {
+  pgPool.on("error", (err) => {
+    console.error("[postgres] pool error (non-fatal):", err.message);
+  });
+}
+
 async function getDb() {
-  if (!PG_CONNECTION_STRING) return null;
-  if (!pgClient) {
-    pgClient = new pg.Client({ connectionString: PG_CONNECTION_STRING });
-    await pgClient.connect();
-  }
-  return pgClient;
+  if (!pgPool) return null;
+  return pgPool;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -130,8 +145,7 @@ async function listDir(dirPath, depth = 0, maxDepth = 3) {
     const rel = path.relative(REPO_PATH, fullPath);
     if (entry.isDirectory()) {
       result.push({ type: "dir", path: rel });
-      const children = await listDir(fullPath, depth + 1, maxDepth);
-      result.push(...children);
+      result.push(...await listDir(fullPath, depth + 1, maxDepth));
     } else {
       result.push({ type: "file", path: rel });
     }
@@ -155,147 +169,20 @@ function verifyPKCE(codeVerifier, codeChallenge) {
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
 const TOOLS = [
-  {
-    name: "list_directory",
-    description: "List files and directories in the repo.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        subpath: { type: "string" },
-        max_depth: { type: "number" },
-      },
-    },
-  },
-  {
-    name: "read_file",
-    description: "Read the contents of a file in the repo.",
-    inputSchema: {
-      type: "object",
-      properties: { path: { type: "string" } },
-      required: ["path"],
-    },
-  },
-  {
-    name: "write_file",
-    description: "Write or overwrite a file in the repo.",
-    inputSchema: {
-      type: "object",
-      properties: { path: { type: "string" }, content: { type: "string" } },
-      required: ["path", "content"],
-    },
-  },
-  {
-    name: "delete_file",
-    description: "Delete a file from the repo.",
-    inputSchema: {
-      type: "object",
-      properties: { path: { type: "string" } },
-      required: ["path"],
-    },
-  },
-  {
-    name: "run_command",
-    description: "Run a shell command in the repo directory.",
-    inputSchema: {
-      type: "object",
-      properties: { command: { type: "string" }, cwd: { type: "string" } },
-      required: ["command"],
-    },
-  },
-  {
-    name: "query_postgres",
-    description: "Run a SQL query against the connected Postgres database.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        sql: { type: "string" },
-        params: { type: "array", items: {} },
-      },
-      required: ["sql"],
-    },
-  },
-  {
-    name: "git_commit_push",
-    description: "Stage all changes, commit, and push to GitHub.",
-    inputSchema: {
-      type: "object",
-      properties: { message: { type: "string" }, branch: { type: "string" } },
-      required: ["message"],
-    },
-  },
-  {
-    name: "git_pull",
-    description: "Pull latest changes from GitHub.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "coolify_list_deployments",
-    description: "List recent deployments for an application in Coolify.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        app_uuid: { type: "string", description: "Coolify application UUID (e.g. tuk1rcjj16vlk33jrbx3c9d3)" },
-      },
-      required: ["app_uuid"],
-    },
-  },
-  {
-    name: "coolify_deployment_logs",
-    description: "Get the logs for a specific Coolify deployment.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        deployment_uuid: { type: "string", description: "Coolify deployment UUID" },
-      },
-      required: ["deployment_uuid"],
-    },
-  },
-  {
-    name: "coolify_list_envs",
-    description: "List environment variables for a Coolify application.",
-    inputSchema: {
-      type: "object",
-      properties: { app_uuid: { type: "string" } },
-      required: ["app_uuid"],
-    },
-  },
-  {
-    name: "coolify_create_env",
-    description: "Create an environment variable for a Coolify application.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        app_uuid: { type: "string" },
-        key: { type: "string" },
-        value: { type: "string" },
-      },
-      required: ["app_uuid", "key", "value"],
-    },
-  },
-  {
-    name: "coolify_update_env",
-    description: "Update an environment variable for a Coolify application.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        app_uuid: { type: "string" },
-        key: { type: "string" },
-        value: { type: "string" },
-      },
-      required: ["app_uuid", "key", "value"],
-    },
-  },
-  {
-    name: "coolify_trigger_deploy",
-    description: "Trigger a new deployment for a Coolify application.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        app_uuid: { type: "string", description: "Coolify application UUID" },
-      },
-      required: ["app_uuid"],
-    },
-  },
+  { name: "list_directory", description: "List files and directories in the repo.", inputSchema: { type: "object", properties: { subpath: { type: "string" }, max_depth: { type: "number" } } } },
+  { name: "read_file", description: "Read the contents of a file in the repo.", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
+  { name: "write_file", description: "Write or overwrite a file in the repo.", inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } },
+  { name: "delete_file", description: "Delete a file from the repo.", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
+  { name: "run_command", description: "Run a shell command in the repo directory.", inputSchema: { type: "object", properties: { command: { type: "string" }, cwd: { type: "string" } }, required: ["command"] } },
+  { name: "query_postgres", description: "Run a SQL query against the connected Postgres database.", inputSchema: { type: "object", properties: { sql: { type: "string" }, params: { type: "array", items: {} } }, required: ["sql"] } },
+  { name: "git_commit_push", description: "Stage all changes, commit, and push to GitHub.", inputSchema: { type: "object", properties: { message: { type: "string" }, branch: { type: "string" } }, required: ["message"] } },
+  { name: "git_pull", description: "Pull latest changes from GitHub.", inputSchema: { type: "object", properties: {} } },
+  { name: "coolify_list_deployments", description: "List recent deployments for an application in Coolify.", inputSchema: { type: "object", properties: { app_uuid: { type: "string", description: "Coolify application UUID" } }, required: ["app_uuid"] } },
+  { name: "coolify_deployment_logs", description: "Get the logs for a specific Coolify deployment.", inputSchema: { type: "object", properties: { deployment_uuid: { type: "string" } }, required: ["deployment_uuid"] } },
+  { name: "coolify_list_envs", description: "List environment variables for a Coolify application.", inputSchema: { type: "object", properties: { app_uuid: { type: "string" } }, required: ["app_uuid"] } },
+  { name: "coolify_create_env", description: "Create an environment variable for a Coolify application.", inputSchema: { type: "object", properties: { app_uuid: { type: "string" }, key: { type: "string" }, value: { type: "string" } }, required: ["app_uuid", "key", "value"] } },
+  { name: "coolify_update_env", description: "Update an environment variable for a Coolify application.", inputSchema: { type: "object", properties: { app_uuid: { type: "string" }, key: { type: "string" }, value: { type: "string" } }, required: ["app_uuid", "key", "value"] } },
+  { name: "coolify_trigger_deploy", description: "Trigger a new deployment for a Coolify application.", inputSchema: { type: "object", properties: { app_uuid: { type: "string" } }, required: ["app_uuid"] } },
 ];
 
 async function handleTool(name, args) {
@@ -315,19 +202,13 @@ async function handleTool(name, args) {
     }
     case "delete_file": {
       const delPath = safePath(args.path);
-      try {
-        await fs.unlink(delPath);
-      } catch (e) {
-        if (e.code !== 'ENOENT') throw e;
-      }
+      try { await fs.unlink(delPath); } catch (e) { if (e.code !== 'ENOENT') throw e; }
       return `✅ Deleted: ${args.path}`;
     }
     case "run_command": {
       const cwd = args.cwd ? safePath(args.cwd) : REPO_PATH;
       const { stdout, stderr } = await execAsync(args.command, {
-        cwd,
-        timeout: 60000,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        cwd, timeout: 60000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
       });
       return [stdout, stderr].filter(Boolean).join("\n--- stderr ---\n");
     }
@@ -345,55 +226,37 @@ async function handleTool(name, args) {
       ];
       const results = [];
       for (const cmd of cmds) {
-        const { stdout, stderr } = await execAsync(cmd, {
-          timeout: 30000,
-          env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-        });
+        const { stdout, stderr } = await execAsync(cmd, { timeout: 30000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
         results.push((stdout + stderr).trim());
       }
       return results.join("\n");
     }
     case "git_pull": {
-      const { stdout, stderr } = await execAsync(`git -C ${REPO_PATH} pull`, {
-        timeout: 30000,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-      });
+      const { stdout, stderr } = await execAsync(`git -C ${REPO_PATH} pull`, { timeout: 30000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
       return (stdout + stderr).trim();
     }
     case "coolify_list_deployments": {
       const data = await coolifyFetch(`/deployments/applications/${args.app_uuid}?take=10`);
-      if (typeof data === "string") return data;
-      return JSON.stringify(data, null, 2);
+      return typeof data === "string" ? data : JSON.stringify(data, null, 2);
     }
     case "coolify_deployment_logs": {
       const data = await coolifyFetch(`/deployments/${args.deployment_uuid}`);
-      if (typeof data === "string") return data;
-      return JSON.stringify(data, null, 2);
+      return typeof data === "string" ? data : JSON.stringify(data, null, 2);
     }
     case "coolify_list_envs": {
       const data = await coolifyFetch(`/applications/${args.app_uuid}/envs`);
-      if (typeof data === "string") return data;
-      return JSON.stringify(data, null, 2);
+      return typeof data === "string" ? data : JSON.stringify(data, null, 2);
     }
     case "coolify_create_env": {
-      const data = await coolifyFetch(`/applications/${args.app_uuid}/envs`, {
-        method: "POST",
-        body: JSON.stringify({ key: args.key, value: args.value }),
-      });
-      if (typeof data === "string") return data;
-      return JSON.stringify(data, null, 2);
+      const data = await coolifyFetch(`/applications/${args.app_uuid}/envs`, { method: "POST", body: JSON.stringify({ key: args.key, value: args.value }) });
+      return typeof data === "string" ? data : JSON.stringify(data, null, 2);
     }
     case "coolify_update_env": {
-      // Get existing envs to find the uuid
       const envs = await coolifyFetch(`/applications/${args.app_uuid}/envs`);
       const env = Array.isArray(envs) ? envs.find(e => e.key === args.key) : null;
       if (!env) return `❌ Env var '${args.key}' not found`;
-      const data = await coolifyFetch(`/applications/${args.app_uuid}/envs`, {
-        method: "PATCH",
-        body: JSON.stringify({ key: args.key, value: args.value, uuid: env.uuid }),
-      });
-      if (typeof data === "string") return data;
-      return JSON.stringify(data, null, 2);
+      const data = await coolifyFetch(`/applications/${args.app_uuid}/envs`, { method: "PATCH", body: JSON.stringify({ key: args.key, value: args.value, uuid: env.uuid }) });
+      return typeof data === "string" ? data : JSON.stringify(data, null, 2);
     }
     case "coolify_trigger_deploy": {
       const data = await coolifyFetch(`/deploy?uuid=${args.app_uuid}&force=false`);
@@ -404,24 +267,31 @@ async function handleTool(name, args) {
   }
 }
 
-// ── MCP Server ────────────────────────────────────────────────────────────────
-const server = new Server(
-  { name: "hetzner-dev-mcp", version: "1.0.5" },
-  { capabilities: { tools: {} } }
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  try {
-    const result = await handleTool(request.params.name, request.params.arguments || {});
-    return { content: [{ type: "text", text: String(result) }] };
-  } catch (err) {
-    return {
-      content: [{ type: "text", text: `❌ Error: ${err.message}` }],
-      isError: true,
-    };
-  }
-});
+// ── FIX 1: Per-connection Server factory ─────────────────────────────────────
+// ORIGINAL BUG: Single shared Server instance. server.connect() called on it
+// for every /mcp request. The MCP SDK throws "Already connected to a transport"
+// on the second concurrent connection — this was an uncaught throw that killed
+// the entire Node process (including the orchestrator cron).
+//
+// FIX: Create a fresh Server instance per connection. Each connection gets its
+// own Server + transport pair, fully isolated. Handlers close over the shared
+// TOOLS array and handleTool function so behaviour is identical.
+function createMcpServer() {
+  const s = new Server(
+    { name: "hetzner-dev-mcp", version: "1.0.6" },
+    { capabilities: { tools: {} } }
+  );
+  s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  s.setRequestHandler(CallToolRequestSchema, async (request) => {
+    try {
+      const result = await handleTool(request.params.name, request.params.arguments || {});
+      return { content: [{ type: "text", text: String(result) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `❌ Error: ${err.message}` }], isError: true };
+    }
+  });
+  return s;
+}
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
 const httpServer = createServer(async (req, res) => {
@@ -445,35 +315,8 @@ const httpServer = createServer(async (req, res) => {
     const redirectUri = url.searchParams.get("redirect_uri");
     const codeChallenge = url.searchParams.get("code_challenge");
     const state = url.searchParams.get("state");
-
     res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(`<!DOCTYPE html>
-<html>
-<head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Authorize Claude</title>
-  <style>
-    body { font-family: sans-serif; max-width: 400px; margin: 80px auto; padding: 20px; }
-    h2 { margin-bottom: 8px; }
-    p { color: #555; margin-bottom: 24px; }
-    input { width: 100%; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; margin-bottom: 12px; }
-    button { width: 100%; padding: 12px; background: #6c47ff; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
-    button:hover { background: #5a3de0; }
-  </style>
-</head>
-<body>
-  <h2>🔌 Authorize Claude</h2>
-  <p>Enter your Bearer token to give Claude access to your server.</p>
-  <form method="POST" action="/authorize">
-    <input type="hidden" name="client_id" value="${clientId}" />
-    <input type="hidden" name="redirect_uri" value="${redirectUri}" />
-    <input type="hidden" name="code_challenge" value="${codeChallenge}" />
-    <input type="hidden" name="state" value="${state}" />
-    <input type="password" name="token" placeholder="Bearer token" autofocus />
-    <button type="submit">Authorize</button>
-  </form>
-</body>
-</html>`);
+    res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Authorize Claude</title><style>body{font-family:sans-serif;max-width:400px;margin:80px auto;padding:20px}h2{margin-bottom:8px}p{color:#555;margin-bottom:24px}input{width:100%;padding:10px;font-size:16px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;margin-bottom:12px}button{width:100%;padding:12px;background:#6c47ff;color:white;border:none;border-radius:6px;font-size:16px;cursor:pointer}button:hover{background:#5a3de0}</style></head><body><h2>🔌 Authorize Claude</h2><p>Enter your Bearer token to give Claude access to your server.</p><form method="POST" action="/authorize"><input type="hidden" name="client_id" value="${clientId}"/><input type="hidden" name="redirect_uri" value="${redirectUri}"/><input type="hidden" name="code_challenge" value="${codeChallenge}"/><input type="hidden" name="state" value="${state}"/><input type="password" name="token" placeholder="Bearer token" autofocus/><button type="submit">Authorize</button></form></body></html>`);
     return;
   }
 
@@ -485,24 +328,17 @@ const httpServer = createServer(async (req, res) => {
     const codeChallenge = params.get("code_challenge");
     const state = params.get("state");
     const clientId = params.get("client_id");
-
     if (token !== BEARER_TOKEN) {
       res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(`<!DOCTYPE html><html><body style="font-family:sans-serif;max-width:400px;margin:80px auto;padding:20px">
-        <h2>❌ Invalid token</h2><p>The token you entered is incorrect.</p>
-        <a href="/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${codeChallenge}&state=${state}&code_challenge_method=S256">Try again</a>
-      </body></html>`);
+      res.end(`<!DOCTYPE html><html><body style="font-family:sans-serif;max-width:400px;margin:80px auto;padding:20px"><h2>❌ Invalid token</h2><p>The token you entered is incorrect.</p><a href="/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${codeChallenge}&state=${state}&code_challenge_method=S256">Try again</a></body></html>`);
       return;
     }
-
     const code = crypto.randomBytes(32).toString("hex");
     authCodes.set(code, { codeChallenge, redirectUri, clientId });
     setTimeout(() => authCodes.delete(code), 5 * 60 * 1000);
-
     const redirect = new URL(redirectUri);
     redirect.searchParams.set("code", code);
     redirect.searchParams.set("state", state);
-
     res.writeHead(302, { Location: redirect.toString() });
     res.end();
     return;
@@ -513,170 +349,105 @@ const httpServer = createServer(async (req, res) => {
     const params = new URLSearchParams(body);
     const code = params.get("code");
     const codeVerifier = params.get("code_verifier");
-
     const stored = authCodes.get(code);
-    if (!stored) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "invalid_grant" }));
-      return;
-    }
-
-    if (!verifyPKCE(codeVerifier, stored.codeChallenge)) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "invalid_grant", error_description: "PKCE verification failed" }));
-      return;
-    }
-
+    if (!stored) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "invalid_grant" })); return; }
+    if (!verifyPKCE(codeVerifier, stored.codeChallenge)) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "invalid_grant", error_description: "PKCE verification failed" })); return; }
     authCodes.delete(code);
     const accessToken = crypto.randomBytes(32).toString("hex");
     tokens.add(accessToken);
     saveTokens(tokens);
-
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ access_token: accessToken, token_type: "Bearer", expires_in: 86400 }));
     return;
   }
 
-  // Public endpoints — skip auth
-  if (url.pathname === '/badge/smoke' || url.pathname === '/smoke-status' || url.pathname === '/smoke-latest' || url.pathname === '/badge/coolify' || url.pathname === '/health' || url.pathname === '/healthz' || url.pathname === '/save-tokens') {
-    // fall through to handlers below
-  } else {
-      const auth = req.headers["authorization"] || "";
-      const token = auth.replace("Bearer ", "");
-      if (token !== BEARER_TOKEN && !tokens.has(token)) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Unauthorized" }));
-        return;
-      }
+  // ── Auth check — public endpoints skip ───────────────────────────────────
+  const PUBLIC_PATHS = [
+    '/.well-known/oauth-authorization-server',
+    '/badge/smoke', '/smoke-status', '/smoke-latest', '/badge/coolify',
+    '/health', '/healthz', '/status', '/save-tokens',
+  ];
+  if (!PUBLIC_PATHS.includes(url.pathname)) {
+    const auth = req.headers["authorization"] || "";
+    const token = auth.replace("Bearer ", "");
+    if (token !== BEARER_TOKEN && !tokens.has(token)) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
   }
 
-
-  // ── Smoke test badge endpoint (serves SVG directly to avoid caching) ───────
+  // ── Smoke badge ───────────────────────────────────────────────────────────
   if (url.pathname === '/badge/smoke' && req.method === 'GET') {
     try {
-      const statusRes = await fetch('https://api.github.com/repos/CommonEmailDotCom/SaaS-Boilerplate/contents/smoke-status.json', { headers: { 'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN, 'Accept': 'application/vnd.github.raw+json', 'Cache-Control': 'no-cache' } });
+      const statusRes = await fetch('https://api.github.com/repos/CommonEmailDotCom/SaaS-Boilerplate/contents/smoke-status.json', {
+        headers: { 'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN, 'Accept': 'application/vnd.github.raw+json', 'Cache-Control': 'no-cache' }
+      });
       const status = await statusRes.json();
       const passing = status.status === 'passing';
-      const label = 'smoke test';
       const message = passing ? 'passing' : 'failing';
       const color = passing ? '#2ea44f' : '#e53e3e';
-      const svg = [
-        '<svg xmlns="http://www.w3.org/2000/svg" width="156" height="20" role="img">',
-        '<title>' + label + ': ' + message + '</title>',
-        '<linearGradient id="s" x2="0" y2="100%">',
-        '<stop offset="0" stop-color="#bbb" stop-opacity=".1"/>',
-        '<stop offset="1" stop-opacity=".1"/>',
-        '</linearGradient>',
-        '<clipPath id="r"><rect width="156" height="20" rx="3" fill="#fff"/></clipPath>',
-        '<g clip-path="url(#r)">',
-        '<rect width="82" height="20" fill="#555"/>',
-        '<rect x="82" width="74" height="20" fill="' + color + '"/>',
-        '<rect width="156" height="20" fill="url(#s)"/>',
-        '</g>',
-        '<g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">',
-        '<text x="41" y="14">' + label + '</text>',
-        '<text x="119" y="14">' + message + '</text>',
-        '</g>',
-        '</svg>'
-      ].join('');
-      res.writeHead(200, {
-        'Content-Type': 'image/svg+xml',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0',
-      });
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="156" height="20" role="img"><title>smoke test: ${message}</title><linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient><clipPath id="r"><rect width="156" height="20" rx="3" fill="#fff"/></clipPath><g clip-path="url(#r)"><rect width="82" height="20" fill="#555"/><rect x="82" width="74" height="20" fill="${color}"/><rect width="156" height="20" fill="url(#s)"/></g><g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11"><text x="41" y="14">smoke test</text><text x="119" y="14">${message}</text></g></svg>`;
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0' });
       res.end(svg);
-    } catch (err) {
-      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache' });
+    } catch {
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
       res.end('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="20"><rect width="82" height="20" fill="#555" rx="3"/><rect x="82" width="38" height="20" fill="#9f9f9f" rx="3"/><g fill="#fff" font-family="Verdana,sans-serif" font-size="11"><text x="41" y="14" text-anchor="middle">smoke test</text><text x="101" y="14" text-anchor="middle">?</text></g></svg>');
     }
     return;
   }
 
-  // ── Smoke test status JSON endpoint ──────────────────────────────────────
   if (url.pathname === '/smoke-status' && req.method === 'GET') {
     try {
-      const statusRes = await fetch('https://api.github.com/repos/CommonEmailDotCom/SaaS-Boilerplate/contents/smoke-status.json', { headers: { 'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN, 'Accept': 'application/vnd.github.raw+json', 'Cache-Control': 'no-cache' } });
-      const status = await statusRes.json();
+      const r = await fetch('https://api.github.com/repos/CommonEmailDotCom/SaaS-Boilerplate/contents/smoke-status.json', {
+        headers: { 'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN, 'Accept': 'application/vnd.github.raw+json', 'Cache-Control': 'no-cache' }
+      });
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
-      res.end(JSON.stringify(status));
-    } catch (err) {
+      res.end(JSON.stringify(await r.json()));
+    } catch {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Status not found' }));
     }
     return;
   }
 
-  // ── Smoke latest redirect — links badge to exact run summary page ─────────
   if (url.pathname === '/smoke-latest' && req.method === 'GET') {
     try {
-      const statusRes = await fetch('https://api.github.com/repos/CommonEmailDotCom/SaaS-Boilerplate/contents/smoke-status.json', { headers: { 'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN, 'Accept': 'application/vnd.github.raw+json', 'Cache-Control': 'no-cache' } });
-      const status = await statusRes.json();
-      const runUrl = status.runUrl || 'https://github.com/CommonEmailDotCom/SaaS-Boilerplate/actions/workflows/smoke-test.yml';
-      res.writeHead(302, { 'Location': runUrl, 'Cache-Control': 'no-cache' });
+      const r = await fetch('https://api.github.com/repos/CommonEmailDotCom/SaaS-Boilerplate/contents/smoke-status.json', {
+        headers: { 'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN, 'Accept': 'application/vnd.github.raw+json', 'Cache-Control': 'no-cache' }
+      });
+      const status = await r.json();
+      res.writeHead(302, { 'Location': status.runUrl || 'https://github.com/CommonEmailDotCom/SaaS-Boilerplate/actions/workflows/smoke-test.yml', 'Cache-Control': 'no-cache' });
       res.end();
-    } catch (err) {
+    } catch {
       res.writeHead(302, { 'Location': 'https://github.com/CommonEmailDotCom/SaaS-Boilerplate/actions/workflows/smoke-test.yml' });
       res.end();
     }
     return;
   }
 
-  // ── Coolify deployment badge ───────────────────────────────────────────────
   if (url.pathname === '/badge/coolify' && req.method === 'GET') {
     try {
-      // Get latest deployments for the SaaS app
       const depRes = await fetch(COOLIFY_URL + '/api/v1/deployments/applications/tuk1rcjj16vlk33jrbx3c9d3?take=1', {
-        headers: { 'Authorization': 'Bearer ' + COOLIFY_API_TOKEN, 'Accept': 'application/json' }
+        headers: { 'Authorization': 'Bearer ' + COOLIFY_API_TOKEN }
       });
-      const depData = await depRes.json();
-      const latest = depData.deployments?.[0];
-
-      let message, color;
-      if (!latest) {
-        message = 'unknown'; color = '#9f9f9f';
-      } else if (latest.status === 'in_progress' || latest.status === 'queued') {
-        message = 'deploying'; color = '#0075ca';
-      } else if (latest.status === 'finished') {
-        message = 'deployed · ' + (latest.commit?.slice(0,7) || ''); color = '#2ea44f';
-      } else if (latest.status === 'failed') {
-        message = 'failed · ' + (latest.commit?.slice(0,7) || ''); color = '#e53e3e';
-      } else if (latest.status === 'cancelled-by-user') {
-        message = 'cancelled'; color = '#9f9f9f';
-      } else {
-        message = latest.status; color = '#9f9f9f';
-      }
-
-      const lw = 58; const mw = message.length * 7 + 14; const tw = lw + mw;
-      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + tw + '" height="20" role="img">' +
-        '<title>coolify: ' + message + '</title>' +
-        '<linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>' +
-        '<clipPath id="r"><rect width="' + tw + '" height="20" rx="3" fill="#fff"/></clipPath>' +
-        '<g clip-path="url(#r)">' +
-        '<rect width="' + lw + '" height="20" fill="#555"/>' +
-        '<rect x="' + lw + '" width="' + mw + '" height="20" fill="' + color + '"/>' +
-        '<rect width="' + tw + '" height="20" fill="url(#s)"/>' +
-        '</g>' +
-        '<g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">' +
-        '<text x="' + Math.round(lw/2) + '" y="14">coolify</text>' +
-        '<text x="' + Math.round(lw + mw/2) + '" y="14">' + message + '</text>' +
-        '</g></svg>';
-
-      res.writeHead(200, {
-        'Content-Type': 'image/svg+xml',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0',
-      });
+      const latest = (await depRes.json()).deployments?.[0];
+      let message = 'unknown', color = '#9f9f9f';
+      if (latest?.status === 'in_progress' || latest?.status === 'queued') { message = 'deploying'; color = '#0075ca'; }
+      else if (latest?.status === 'finished') { message = 'deployed · ' + (latest.commit?.slice(0,7) || ''); color = '#2ea44f'; }
+      else if (latest?.status === 'failed') { message = 'failed · ' + (latest.commit?.slice(0,7) || ''); color = '#e53e3e'; }
+      else if (latest?.status === 'cancelled-by-user') { message = 'cancelled'; color = '#9f9f9f'; }
+      const lw = 58, mw = message.length * 7 + 14, tw = lw + mw;
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${tw}" height="20" role="img"><title>coolify: ${message}</title><linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient><clipPath id="r"><rect width="${tw}" height="20" rx="3" fill="#fff"/></clipPath><g clip-path="url(#r)"><rect width="${lw}" height="20" fill="#555"/><rect x="${lw}" width="${mw}" height="20" fill="${color}"/><rect width="${tw}" height="20" fill="url(#s)"/></g><g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11"><text x="${Math.round(lw/2)}" y="14">coolify</text><text x="${Math.round(lw+mw/2)}" y="14">${message}</text></g></svg>`;
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0' });
       res.end(svg);
-    } catch (err) {
-      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-cache' });
+    } catch {
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
       res.end('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="20"><rect width="58" height="20" fill="#555" rx="3"/><rect x="58" width="62" height="20" fill="#9f9f9f" rx="3"/><g fill="#fff" font-family="Verdana,sans-serif" font-size="11" text-anchor="middle"><text x="29" y="14">coolify</text><text x="89" y="14">unknown</text></g></svg>');
     }
     return;
   }
 
-  // ── Save current in-memory tokens to disk (call after reconnect) ──────────
   if (url.pathname === '/save-tokens' && req.method === 'GET') {
     saveTokens(tokens);
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -684,7 +455,6 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // Trigger Coolify deploy (called by GitHub Actions)
   if (url.pathname === "/trigger-deploy" && req.method === "POST") {
     try {
       const appUuid = url.searchParams.get("uuid") || "tuk1rcjj16vlk33jrbx3c9d3";
@@ -706,31 +476,69 @@ const httpServer = createServer(async (req, res) => {
       github: GITHUB_REPO || "not set",
       coolify: COOLIFY_API_TOKEN ? "configured" : "not configured",
       tools: TOOLS.length,
-      tool_names: TOOLS.map(t => t.name),
     }));
     return;
   }
 
+  // ── FIX 4: /healthz with real postgres connectivity check ─────────────────
   if (url.pathname === "/healthz" && req.method === "GET") {
-    const allTools = TOOLS.map(t => t.name);
     const expected = ["list_directory","read_file","write_file","delete_file","run_command","query_postgres","git_commit_push","git_pull","coolify_list_deployments","coolify_deployment_logs","coolify_trigger_deploy","coolify_list_envs","coolify_create_env","coolify_update_env"];
-    const missing = expected.filter(n => !allTools.includes(n));
-    const ok = missing.length === 0;
+    const missing = expected.filter(n => !TOOLS.map(t => t.name).includes(n));
+    let pgOk = true, pgError = null;
+    if (pgPool) { try { await pgPool.query('SELECT 1'); } catch (e) { pgOk = false; pgError = e.message; } }
+    const ok = missing.length === 0 && pgOk;
     res.writeHead(ok ? 200 : 503, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       status: ok ? "ok" : "degraded",
       tools_registered: TOOLS.length,
       tools_expected: expected.length,
       missing,
+      postgres: pgPool ? (pgOk ? "ok" : `error: ${pgError}`) : "not configured",
+      active_connections: activeConnections,
+      uptime_seconds: Math.floor((Date.now() - SERVER_START) / 1000),
     }));
     return;
   }
 
+  // ── /status — public visibility for all users ─────────────────────────────
+  // Shows server state so users can check before attempting a reset.
+  // Reset coordination lock is planned for next release.
+  if (url.pathname === "/status" && req.method === "GET") {
+    let pgOk = true;
+    if (pgPool) { try { await pgPool.query('SELECT 1'); } catch { pgOk = false; } }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      status: "ok",
+      version: "1.0.6",
+      uptime_seconds: Math.floor((Date.now() - SERVER_START) / 1000),
+      active_mcp_connections: activeConnections,
+      postgres: pgPool ? (pgOk ? "ok" : "error") : "not configured",
+      tools: TOOLS.length,
+      note: "Reset coordination lock coming in next release",
+    }));
+    return;
+  }
+
+  // ── FIX 1 + FIX 5: Per-connection Server with transport error handling ────
   if (url.pathname === "/mcp") {
+    activeConnections++;
+    const server = createMcpServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    res.on("close", () => transport.close());
-    await server.connect(transport);
-    await transport.handleRequest(req, res);
+    res.on("close", () => {
+      activeConnections = Math.max(0, activeConnections - 1);
+      transport.close().catch(() => {});
+    });
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      activeConnections = Math.max(0, activeConnections - 1);
+      console.error("[MCP] transport error:", err.message);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    }
     return;
   }
 
@@ -743,7 +551,8 @@ ensureRepo().then(() => {
   httpServer.listen(PORT, () => {
     console.log(`✅ MCP server running on port ${PORT}`);
     console.log(`   Repo: ${GITHUB_REPO || "not set"} → ${REPO_PATH}`);
-    console.log(`   Postgres: ${PG_CONNECTION_STRING ? "configured" : "not configured"}`);
+    console.log(`   Postgres: ${PG_CONNECTION_STRING ? "configured (pool, max 3)" : "not configured"}`);
     console.log(`   Coolify: ${COOLIFY_API_TOKEN ? "configured" : "not configured"}`);
+    console.log(`   Fixes: FIX1=per-connection-Server FIX2=pg.Pool FIX3=uncaughtException FIX4=healthz+postgres FIX5=transport-error-handling`);
   });
 });
