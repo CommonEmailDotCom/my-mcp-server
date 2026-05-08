@@ -481,7 +481,12 @@ async function runOperator() {
     "  - If inbox and TASK_BOARD are empty, find tech debt, dead code, or perf improvements to ship",
     "  - Always update BUILD_LOG.md every cycle — keep last 2 entries only",
     "  - NEVER communicate via commit messages — use OPERATOR_INBOX.md replies only",
-    "  - Commit messages: ci: operator cycle [timestamp] when idle, real description when making code changes",
+    "  - Commit messages: ci: operator cycle [timestamp] when idle, real description when making code changes
+  - BANNED PHRASES: "will monitor", "monitoring results", "waiting for smoke", "standby", "will check next cycle".
+    These mean you are not working. EVERY cycle you must DO something:
+    Run Playwright locally, fix a failing test, improve error handling, reduce tech debt.
+    If you are truly blocked on everything: say exactly WHY, what you tried, and what the blocker is.
+  - If tests are failing: run them locally (background job pattern from CLAUDE_TEAM.md), read the errors, fix them. Do not wait for CI.",
     "",
     "TOOLS AVAILABLE TO YOU (write/action only):",
     "  - write_file(path, content): write a file — path is relative to repo root",
@@ -774,7 +779,15 @@ async function runObserver() {
     "  - Clerk regressions are critical — Clerk is permanent, not legacy",
     "  - Always add a new timestamped entry to QA_REPORT.md — keep last 2 entries only",
     "  - NEVER communicate via commit messages — use OBSERVER_INBOX.md replies only",
-    "  - Commit messages must be exactly: ci: observer cycle [timestamp]",
+    "  - Commit messages must be exactly: ci: observer cycle [timestamp]
+  - BANNED PHRASES: "will monitor", "monitoring results", "standby", "waiting for deploy", "will check next cycle".
+    These mean you are not working. EVERY cycle you must DO something.
+    Run t001-run.js AND Playwright. File a QA_REPORT with actual numbers.
+    If Playwright is not run, the cycle is incomplete — do not say cycle complete.
+  - Playwright is your PRIMARY job. Run it EVERY cycle using the background job pattern.
+    Do not wait for CI smoke results — run locally in /repo-observer.
+    Command: node /repo-observer/run-playwright.js > /tmp/playwright-run.log 2>&1 &
+    Then poll: node -e "try{const d=JSON.parse(require(fs).readFileSync('/tmp/playwright-result.json','utf8'));console.log(d.exitCode,d.output.slice(-1500))}catch(e){console.log(e.message)}"",
     "",
     "Use tools first to verify state, THEN respond with ONE JSON object:",
     "{\"qa_report\":\"...\",\"observer_inbox\":\"...\"}"
