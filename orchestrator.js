@@ -160,12 +160,21 @@ async function callClaude(systemPrompt, userMessage, useMcpTools = false) {
   console.log("  -> stop_reason: " + data.stop_reason + ", tokens: " + data.usage?.input_tokens + "in / " + data.usage?.output_tokens + "out");
   if (data.stop_reason === "max_tokens") console.error("  WARNING: Response truncated");
   
-  // If tools were used, extract all text blocks from the response
-  if (useMcpTools && Array.isArray(data.content)) {
-    return data.content
+  // Extract all text blocks regardless of stop_reason
+  // pause_turn means Claude used tools — extract text from the response
+  // The tool results are already processed by Anthropic's MCP client
+  if (Array.isArray(data.content)) {
+    const text = data.content
       .filter(b => b.type === "text")
       .map(b => b.text)
       .join("\n");
+    if (text) return text;
+    // If no text blocks yet (all tool use), log and return empty for now
+    if (data.stop_reason === "pause_turn") {
+      console.log("  -> pause_turn with no text yet — tool calls in progress");
+      // Return a minimal valid JSON so the agent doesn't fail silently
+      return "{}";
+    }
   }
   return data.content?.[0]?.text || "";
 }
@@ -321,7 +330,10 @@ async function runOperator() {
   // Read CODEBASE_REFERENCE.md to inject into Operator prompt
   let codebaseRef = '';
   try {
-    codebaseRef = await readRepoFile(REPO_OPERATOR, 'agent_sync/CODEBASE_REFERENCE.md');
+    const fullRef = await readRepoFile(REPO_OPERATOR, 'agent_sync/CODEBASE_REFERENCE.md');
+    // Only inject the first 2000 chars — the critical warnings are at the top
+    codebaseRef = fullRef.slice(0, 2000);
+    if (fullRef.length > 2000) codebaseRef += "\n[...truncated for token efficiency — full file at agent_sync/CODEBASE_REFERENCE.md...]";
   } catch (e) {
     console.error('Could not read CODEBASE_REFERENCE.md:', e.message);
   }
@@ -634,9 +646,14 @@ async function runObserver() {
       timeout: 120000,
       cwd: REPO_OBSERVER,
       env: { ...process.env }
+    }).catch(e => {
+      // T-001 exits with code 1 when any test fails — that's a valid result, not an error
+      // execAsync throws on non-zero exit, but stdout still contains the test output
+      if (e.stdout) return { stdout: e.stdout, stderr: e.stderr || "" };
+      throw e;
     });
     t001Result = stdout.slice(-3000);
-    t001Stderr = stderr.slice(-500);
+    t001Stderr = stderr ? stderr.slice(-500) : "";
     console.log("  -> T-001 run complete, last line:", stdout.trim().split("\n").pop());
   } catch (e) {
     t001Result = "ERROR: " + e.message;
