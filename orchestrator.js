@@ -137,7 +137,23 @@ async function callClaude(systemPrompt, userMessage, useMcpTools = false) {
       }
     ];
     // All tools available — agents told in system prompt which to use
-    body.tools = [{ type: "mcp_toolset", mcp_server_name: "mcp-server" }];
+    // Use correct mcp-client-2025-11-20 format: default_config + configs
+    // git_commit_push is DISABLED — orchestrator handles commits with correct per-agent identity
+    // Agents calling git_commit_push directly get wrong author (CommonEmailDotCom from MCP git config)
+    body.tools = [{
+      type: 'mcp_toolset',
+      mcp_server_name: 'mcp-server',
+      default_config: { enabled: false },
+      configs: {
+        read_file:              { enabled: true },
+        write_file:             { enabled: true },
+        delete_file:            { enabled: true },
+        run_command:            { enabled: true },
+        git_pull:               { enabled: true },
+        coolify_trigger_deploy: { enabled: true },
+        query_postgres:         { enabled: true }
+      }
+    }];
     body.tool_choice = { type: "auto" };
   }
 
@@ -266,7 +282,7 @@ async function runManager() {
     "  - query_postgres(sql): check DB state",
     "  - coolify_trigger_deploy(app_uuid): trigger a deployment",
     "  - write_file(path, content): write agent_sync/ files directly if needed",
-    "  - git_commit_push(message): commit and push",
+    "  // git_commit_push: NOT available — orchestrator commits with correct per-agent identity",
     "",
     "  - read_file(path, start_line?, end_line?): read files with optional pagination",
     "",
@@ -430,7 +446,7 @@ async function runOperator() {
     "  - write_file(path, content): write a file — path is relative to repo root",
     "  - delete_file(path): delete a file",
     "  - run_command(command, cwd?): run shell commands — OUTPUT IS CAPPED AT 5000 CHARS",
-    "  - git_commit_push(message): stage all changes, commit, and push",
+    "  // git_commit_push: NOT available — orchestrator commits with correct per-agent identity",
     "  - git_pull(): pull latest from main",
     "  - coolify_trigger_deploy(app_uuid): trigger a Coolify deployment",
     "  - query_postgres(sql, params?): run a SQL query",
@@ -659,7 +675,7 @@ async function runObserver() {
     "TOOLS AVAILABLE TO YOU:",
     "  - run_command(command, cwd?): run scripts, curl, ls — OUTPUT CAPPED AT 5000 CHARS",
     "  - write_file(path, content): update test scripts",
-    "  - git_commit_push(message): commit and push test changes",
+    "  // git_commit_push: NOT available — orchestrator commits with correct per-agent identity",
     "  - query_postgres(sql): check DB state",
     "",
     "  - read_file(path, start_line?, end_line?): read files with optional pagination",
