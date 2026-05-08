@@ -170,7 +170,19 @@ function verifyPKCE(codeVerifier, codeChallenge) {
 // ── Tools ─────────────────────────────────────────────────────────────────────
 const TOOLS = [
   { name: "list_directory", description: "List files and directories in the repo.", inputSchema: { type: "object", properties: { subpath: { type: "string" }, max_depth: { type: "number" } } } },
-  { name: "read_file", description: "Read the contents of a file in the repo.", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
+  {
+    name: "read_file",
+    description: "Read the contents of a file in the repo. Supports pagination via start_line/end_line to avoid token limits on large files. Always check total_lines in the response and paginate if needed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File path relative to repo root" },
+        start_line: { type: "number", description: "1-based line number to start from (default: 1)" },
+        end_line: { type: "number", description: "1-based line number to end at (default: read all). Use with start_line to paginate large files." },
+      },
+      required: ["path"]
+    }
+  },
   { name: "write_file", description: "Write or overwrite a file in the repo.", inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } },
   { name: "delete_file", description: "Delete a file from the repo.", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
   { name: "run_command", description: "Run a shell command in the repo directory.", inputSchema: { type: "object", properties: { command: { type: "string" }, cwd: { type: "string" } }, required: ["command"] } },
@@ -194,11 +206,32 @@ async function handleTool(name, args) {
     }
     case "read_file": {
       const content = await fs.readFile(safePath(args.path), "utf-8");
-      // Cap at 8000 chars to prevent huge files blowing up tool conversation context
-      if (content.length > 8000) {
-        return content.slice(0, 8000) + `\n\n[...file truncated at 8000 chars. Full length: ${content.length} chars. Use a more specific read or grep for targeted sections...]`;
+      const lines = content.split("\n");
+      const totalLines = lines.length;
+      const startLine = args.start_line ? Math.max(1, args.start_line) : 1;
+      const endLine = args.end_line ? Math.min(totalLines, args.end_line) : totalLines;
+
+      // If no pagination requested and file is small, return as-is
+      if (!args.start_line && !args.end_line && content.length <= 8000) {
+        return `[File: ${args.path} | ${totalLines} lines]\n\n` + content;
       }
-      return content;
+
+      // Paginate: return requested line range
+      const slice = lines.slice(startLine - 1, endLine).join("\n");
+      const header = `[File: ${args.path} | Lines ${startLine}-${endLine} of ${totalLines}]`;
+      const footer = endLine < totalLines
+        ? `\n\n[...more content below — call read_file with start_line=${endLine + 1} to continue...]`
+        : `\n[end of file]`;
+
+      // Still cap the slice at 8000 chars as a safety net
+      if (slice.length > 8000) {
+        const truncated = slice.slice(0, 8000);
+        const truncLine = startLine + truncated.split("\n").length - 1;
+        return header + "\n\n" + truncated +
+          `\n\n[...slice truncated at 8000 chars (~line ${truncLine}). Use end_line=${truncLine} and start_line=${truncLine+1} to continue...]`;
+      }
+
+      return header + "\n\n" + slice + footer;
     }
     case "write_file": {
       const full = safePath(args.path);
