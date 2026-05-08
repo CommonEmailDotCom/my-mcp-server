@@ -192,8 +192,14 @@ async function handleTool(name, args) {
       const entries = await listDir(base, 0, args.max_depth ?? 3);
       return entries.map((e) => `${e.type === "dir" ? "📁" : "📄"} ${e.path}`).join("\n");
     }
-    case "read_file":
-      return await fs.readFile(safePath(args.path), "utf-8");
+    case "read_file": {
+      const content = await fs.readFile(safePath(args.path), "utf-8");
+      // Cap at 8000 chars to prevent huge files blowing up tool conversation context
+      if (content.length > 8000) {
+        return content.slice(0, 8000) + `\n\n[...file truncated at 8000 chars. Full length: ${content.length} chars. Use a more specific read or grep for targeted sections...]`;
+      }
+      return content;
+    }
     case "write_file": {
       const full = safePath(args.path);
       await fs.mkdir(path.dirname(full), { recursive: true });
@@ -210,7 +216,12 @@ async function handleTool(name, args) {
       const { stdout, stderr } = await execAsync(args.command, {
         cwd, timeout: 60000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
       });
-      return [stdout, stderr].filter(Boolean).join("\n--- stderr ---\n");
+      const combined = [stdout, stderr].filter(Boolean).join("\n--- stderr ---\n");
+      // Cap at 5000 chars to prevent verbose output blowing up tool conversation context
+      if (combined.length > 5000) {
+        return combined.slice(0, 5000) + `\n[...output truncated at 5000 chars, total: ${combined.length} chars]`;
+      }
+      return combined;
     }
     case "query_postgres": {
       const db = await getDb();
