@@ -136,22 +136,8 @@ async function callClaude(systemPrompt, userMessage, useMcpTools = false) {
         authorization_token: process.env.BEARER_TOKEN || ""
       }
     ];
-    // Restrict to write/action tools only — reads are pre-fetched by orchestrator
-    // This prevents multi-turn read loops that accumulate conversation history
-    body.tools = [{
-      type: "mcp_toolset",
-      mcp_server_name: "mcp-server",
-      tool_configuration: {
-        enabled: true,
-        allowed_tools: [
-          "read_file",
-          "write_file", "delete_file",
-          "run_command", "git_commit_push", "git_pull",
-          "coolify_trigger_deploy",
-          "query_postgres"
-        ]
-      }
-    }];
+    // All tools available — agents told in system prompt which to use
+    body.tools = [{ type: "mcp_toolset", mcp_server_name: "mcp-server" }];
     body.tool_choice = { type: "auto" };
   }
 
